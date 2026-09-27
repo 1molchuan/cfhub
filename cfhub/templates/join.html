@@ -6,6 +6,7 @@
   <li>同一个 token 可以装在多台机器上,每台(不同网段)各算一票;一个池里每人最多算 5 台,且每个 IP 必须有 2 人以上认可。</li>
   <li>每次运行消耗几 MB 流量;不开放任何端口,不代理任何流量。</li>
   <li>这里只记录你线路所在的 /24 网段和运营商,不保存你的完整 IP。</li>
+  <li>探针和本站的代码都开源在 <a href="https://github.com/1molchuan/cfhub">github.com/1molchuan/cfhub</a>:探针连哪些地址、上报什么都写在 README 里,安装的程序可以从源码逐字节复现,sha256 和安装脚本里的一致。</li>
 </ul>
 {{if not .Session.User.ID}}
   <p><a class="button" href="/login">用 linux.do 账号登录</a>(需要信任等级 {{.MinTrust}} 及以上)</p>
