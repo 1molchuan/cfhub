@@ -1,0 +1,69 @@
+# cfhub volunteer prober installer (Windows). In an elevated PowerShell:
+#   Install:   & ([scriptblock]::Create((irm {{.PublicURL}}/install.ps1))) -Token <TOKEN>
+#   Uninstall: & ([scriptblock]::Create((irm {{.PublicURL}}/install.ps1))) -Uninstall
+# Runs hourly as SYSTEM from %ProgramData%\cfprobe (readable only by SYSTEM and Administrators).
+param([string]$Token, [switch]$Uninstall)
+$ErrorActionPreference = 'Stop'
+$Hub = '{{.PublicURL}}'
+$Dir = Join-Path $env:ProgramData 'cfprobe'
+$TaskName = 'cfprobe'
+
+$me = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Please run PowerShell as Administrator.' }
+
+if ($Uninstall) {
+  Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+  Remove-Item -Recurse -Force $Dir -ErrorAction SilentlyContinue
+  Write-Host 'cfprobe removed.'
+  return
+}
+
+if ($Token -notmatch '^cfp_[A-Za-z0-9_-]{20,60}$') { throw "Usage: -Token <TOKEN>   (get a token at $Hub/join)" }
+if (-not [Environment]::Is64BitOperatingSystem) { throw 'Only 64-bit Windows is supported.' }
+
+New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+# SIDs, not names (group names are localized): S-1-5-18 = SYSTEM, S-1-5-32-544 = Administrators.
+& icacls $Dir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$ProgressPreference = 'SilentlyContinue' # the progress bar slows Invoke-WebRequest down a lot
+$exe = Join-Path $Dir 'cfprobe.exe'
+$tmp = "$exe.download"
+# Mirrors first (a CDN is far faster from mainland lines), then the hub itself. Any source will do:
+# the binary must match the published checksum.
+$ok = $false
+foreach ($src in @({{range $i, $s := .Sources}}{{if $i}}, {{end}}'{{$s}}'{{end}})) {
+  try {
+    Invoke-WebRequest -UseBasicParsing -TimeoutSec 600 -Uri "$src/cfprobe-windows-amd64.exe" -OutFile $tmp
+    if ((Get-FileHash -Algorithm SHA256 $tmp).Hash.ToLower() -eq '{{.SHA.windows}}') { $ok = $true; break }
+    Write-Warning "$src served a file that does not match the checksum, trying the next source"
+  } catch {
+    Write-Warning "$src failed ($($_.Exception.Message)), trying the next source"
+  }
+}
+if (-not $ok) {
+  Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+  throw 'No source gave a binary matching the checksum, refusing to install.'
+}
+Move-Item -Force $tmp $exe
+Set-Content -NoNewline -Encoding ascii -Path (Join-Path $Dir 'token') -Value $Token
+
+$run = Join-Path $Dir 'run.cmd'
+@"
+@echo off
+"%~dp0cfprobe.exe" -hub $Hub -token-file "%~dp0token" -history "%~dp0history4.json" -log "%~dp0cfprobe.log"
+"%~dp0cfprobe.exe" -hub $Hub -token-file "%~dp0token" -history "%~dp0history6.json" -log "%~dp0cfprobe.log" -family 6
+exit /b 0
+"@ | Set-Content -Encoding ascii -Path $run
+
+$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/c `"$run`"" -WorkingDirectory $Dir
+$hourly = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Hours 1)
+$boot = New-ScheduledTaskTrigger -AtStartup
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 20) -MultipleInstances IgnoreNew `
+  -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+$principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -LogonType ServiceAccount -RunLevel Highest
+Register-ScheduledTask -TaskName $TaskName -Force -Action $action -Trigger $hourly, $boot -Settings $settings `
+  -Principal $principal -Description 'cfhub volunteer prober' | Out-Null
+Start-ScheduledTask -TaskName $TaskName
+Write-Host "cfprobe installed. The first report shows up within a few minutes at $Hub/me"
+Write-Host "Log: $Dir\cfprobe.log"

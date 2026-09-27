@@ -1,0 +1,35 @@
+{{define "content"}}
+<h1>加入:在你的线路上跑一个探针</h1>
+<p>探针每小时用 ECH 实测一批 Cloudflare IP(和浏览器访问 Cloudflare 站点的方式相同),把结果上报到这里。同一运营商有足够多的探针后,edge DoH 就会给这个运营商的用户返回更适合他们的优选 IP。</p>
+<ul class="muted">
+  <li>只需要一台能长期开机的 Linux(x86 / ARM)或 Windows 电脑,<b>家庭宽带最有价值</b>。云服务器也欢迎:阿里云、腾讯云、华为云等国内云厂商的机器单独汇成"国内云厂商"池,境外机器只展示不分池。</li>
+  <li>同一个 token 可以装在多台机器上,每台(不同网段)各算一票;一个池里每人最多算 5 台,且每个 IP 必须有 2 人以上认可。</li>
+  <li>每次运行消耗几 MB 流量;不开放任何端口,不代理任何流量。</li>
+  <li>这里只记录你线路所在的 /24 网段和运营商,不保存你的完整 IP。</li>
+</ul>
+{{if not .Session.User.ID}}
+  <p><a class="button" href="/login">用 linux.do 账号登录</a>(需要信任等级 {{.MinTrust}} 及以上)</p>
+{{else if .Session.User.Banned}}
+  <p class="card warn">你的账号已被管理员停用上报。{{if .Session.User.BanReason}}原因:{{.Session.User.BanReason}}{{end}}</p>
+{{else}}
+  {{if .NewToken}}
+    <section class="card">
+      <h2>你的 token(只显示这一次,请立即保存)</h2>
+      <p><code class="token">{{.NewToken}}</code></p>
+      <h3>Linux(root 运行)</h3>
+      <pre>curl -fsSL {{.PublicURL}}/install.sh | sudo bash -s -- {{.NewToken}}</pre>
+      <h3>Windows(以管理员身份打开 PowerShell)</h3>
+      <pre>&amp; ([scriptblock]::Create((irm {{.PublicURL}}/install.ps1))) -Token {{.NewToken}}</pre>
+      <p class="muted">卸载:Linux 运行 <code>curl -fsSL {{.PublicURL}}/install.sh | sudo bash -s -- --uninstall</code>;Windows 运行 <code>&amp; ([scriptblock]::Create((irm {{.PublicURL}}/install.ps1))) -Uninstall</code>。</p>
+    </section>
+  {{else if .TokenPrefix}}
+    <section class="card">
+      <p>你已经有一个 token:<code>{{.TokenPrefix}}…</code>(创建于 {{fmtTime .TokenCreated}}{{if .TokenUsed}},最近使用 {{fmtTime .TokenUsed}}{{end}})。</p>
+      <p class="muted">token 只保存了哈希,无法再次查看。忘记了就重新生成一个,旧的会立即失效,已装好的探针需要用新 token 重装一次。</p>
+      <form method="post" action="/me/token"><input type="hidden" name="csrf" value="{{.CSRF}}"><button>重新生成 token</button></form>
+    </section>
+  {{else}}
+    <form method="post" action="/me/token"><input type="hidden" name="csrf" value="{{.CSRF}}"><button>生成我的 token</button></form>
+  {{end}}
+{{end}}
+{{end}}

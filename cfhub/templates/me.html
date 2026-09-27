@@ -1,0 +1,10 @@
+{{define "content"}}
+<h1>我的探针</h1>
+<p>{{.Session.User.Username}}(linux.do id {{.Session.User.ID}},信任等级 {{.Session.User.TrustLevel}}){{if .TokenPrefix}} · token <code>{{.TokenPrefix}}…</code>{{else}} · 还没有 token,去 <a href="/join">加入</a> 页生成{{end}}</p>
+{{if .Reports}}
+<table>
+  <tr><th>时间</th><th>线路</th><th>网段(探针)</th><th>协议</th><th>采纳 IP</th><th>丢弃</th><th>版本</th></tr>
+  {{range .Reports}}<tr><td>{{fmtTime .Report.At}}</td><td>{{.Line}}</td><td><code>{{.Report.Prefix}}</code></td><td>IPv{{.Report.Family}}</td><td>{{len .Report.IPs}}</td><td>{{.Report.Dropped}}</td><td>{{.Report.Version}}</td></tr>{{end}}
+</table>
+{{else}}<p class="muted">还没有收到你的探针上报。安装后第一次上报一般在几分钟内出现。</p>{{end}}
+{{end}}

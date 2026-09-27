@@ -1,0 +1,21 @@
+{{define "content"}}
+<h1>各运营商 Cloudflare 优选 IP</h1>
+<p class="muted">由 linux.do 志愿者在自己的线路上用 ECH 实测得出。每台探针(按所在网段区分)算一票,一个人可以接入多台服务器,同一个池最多算 5 台。至少 {{.Quorum}} 个不同用户的探针达成多数一致、且每个 IP 都有 2 人以上认可才会发布;发布后 edge DoH 会按访问者的运营商(阿里云、腾讯云等国内云厂商合为一类)返回对应的池。{{if .UpdatedAt}}更新于 {{fmtTime .UpdatedAt}}。{{end}}</p>
+{{if not .Pools}}<p class="card">还没有探针上报数据。<a href="/join">来当第一个志愿者吧</a>。</p>{{end}}
+<div class="grid">
+{{range .Pools}}
+  <section class="card {{if .Pool.Published}}live{{else}}idle{{end}}">
+    <h2>{{.Pool.Name}} <small>IPv{{.Pool.Family}}</small></h2>
+    <p class="status">{{if .Pool.Published}}✅ 已发布{{else}}⏸ {{.Pool.Reason}}{{end}}</p>
+    <p class="muted">{{.Pool.Users}} 人 · {{.Pool.Probers}} 台探针{{if .Pool.MedianMS}} · 握手中位 {{.Pool.MedianMS}} ms{{end}}</p>
+    {{if .Pool.IPs}}
+    <table>
+      <tr><th>IP</th><th>中位延迟</th><th>票数</th></tr>
+      {{range .Pool.IPs}}<tr><td><code>{{.IP}}</code></td><td>{{.MedianMS}} ms</td><td>{{.Votes}} 台 / {{.Users}} 人</td></tr>{{end}}
+    </table>
+    {{end}}
+    {{if .Spark}}<svg class="spark" viewBox="0 0 160 36" preserveAspectRatio="none" aria-label="近 48 小时握手中位延迟"><polyline points="{{.Spark}}"/></svg><p class="muted small">近 48 小时握手中位延迟 · IP 变动 {{.Changes}} 次</p>{{end}}
+  </section>
+{{end}}
+</div>
+{{end}}

@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# cfhub volunteer prober installer (Linux, systemd).
+#   Install:   curl -fsSL {{.PublicURL}}/install.sh | sudo bash -s -- <TOKEN>
+#   Uninstall: curl -fsSL {{.PublicURL}}/install.sh | sudo bash -s -- --uninstall
+# Runs hourly as an unprivileged system user; opens no ports; the binary is checksum-verified.
+set -euo pipefail
+HUB="{{.PublicURL}}"
+BIN=/usr/local/bin/cfprobe
+CONF=/etc/cfprobe
+STATE=/var/lib/cfprobe
+UNIT=/etc/systemd/system/cfprobe.service
+TIMER=/etc/systemd/system/cfprobe.timer
+die() { echo "cfprobe: $*" >&2; exit 1; }
+
+[ "$(id -u)" = 0 ] || die "please run as root (sudo)"
+command -v systemctl >/dev/null || die "systemd is required"
+
+if [ "${1:-}" = "--uninstall" ]; then
+  systemctl disable --now cfprobe.timer 2>/dev/null || true
+  systemctl stop cfprobe.service 2>/dev/null || true
+  rm -f "$UNIT" "$TIMER" "$BIN"
+  rm -rf "$CONF" "$STATE"
+  systemctl daemon-reload
+  if id cfprobe >/dev/null 2>&1; then userdel cfprobe || true; fi
+  echo "cfprobe removed."
+  exit 0
+fi
+
+TOKEN="${1:-}"
+[[ "$TOKEN" =~ ^cfp_[A-Za-z0-9_-]{20,60}$ ]] || die "usage: curl -fsSL $HUB/install.sh | sudo bash -s -- <TOKEN>   (get a token at $HUB/join)"
+
+case "$(uname -m)" in
+  x86_64|amd64)  ARCH=amd64; SHA={{.SHA.amd64}} ;;
+  aarch64|arm64) ARCH=arm64; SHA={{.SHA.arm64}} ;;
+  *) die "unsupported architecture $(uname -m) (amd64 and arm64 only)" ;;
+esac
+
+TMP=$(mktemp)
+trap 'rm -f "$TMP"' EXIT
+# Mirrors first (a CDN is far faster from mainland lines), then the hub itself. Any source will do:
+# the binary must match the checksum above.
+OK=""
+for SRC in {{range .Sources}}"{{.}}" {{end}}; do
+  if curl -fsSL --retry 2 --connect-timeout 15 --max-time 600 -o "$TMP" "$SRC/cfprobe-linux-$ARCH" \
+    && echo "$SHA  $TMP" | sha256sum -c --quiet - 2>/dev/null; then
+    OK=1
+    break
+  fi
+  echo "cfprobe: $SRC failed or did not match the checksum, trying the next source" >&2
+done
+[ -n "$OK" ] || die "no source gave a binary matching the checksum, refusing to install"
+
+id cfprobe >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin cfprobe
+install -m 0755 "$TMP" "$BIN"
+install -d -m 0750 -o root -g cfprobe "$CONF"
+umask 077
+printf '%s' "$TOKEN" > "$CONF/token"
+chown root:cfprobe "$CONF/token"
+chmod 0640 "$CONF/token"
+install -d -m 0750 -o cfprobe -g cfprobe "$STATE"
+
+cat > "$UNIT" <<EOF
+[Unit]
+Description=cfhub volunteer prober (Cloudflare preferred-IP measurement)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=cfprobe
+Group=cfprobe
+ExecStart=$BIN -hub $HUB -token-file $CONF/token -history $STATE/history4.json
+# IPv6 is optional: without it this run just fails and is ignored.
+ExecStart=-$BIN -hub $HUB -token-file $CONF/token -history $STATE/history6.json -family 6
+TimeoutStartSec=20min
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=$STATE
+EOF
+
+cat > "$TIMER" <<EOF
+[Unit]
+Description=Run the cfhub prober every hour
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=60min
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now cfprobe.timer
+systemctl start --no-block cfprobe.service
+echo "cfprobe installed. The first report shows up within a few minutes at $HUB/me"
+echo "Logs: journalctl -u cfprobe -n 50"

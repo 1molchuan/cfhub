@@ -1,0 +1,29 @@
+{{define "layout"}}<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · cfhub 优选 IP</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="icon" type="image/svg+xml" href="/static/logo.svg">
+<link rel="icon" type="image/png" href="/static/logo.png">
+</head>
+<body>
+<header>
+  <a class="brand" href="/"><img src="/static/logo.svg" alt="" width="28" height="28">cfhub</a>
+  <nav>
+    <a href="/">看板</a>
+    <a href="/join">加入</a>
+    {{if .Session.User.ID}}<a href="/me">我的探针</a>{{end}}
+    {{if .Session.Admin}}<a href="/admin">管理</a>{{end}}
+    {{if .Session.User.ID}}
+      <form method="post" action="/logout" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="link">退出 {{.Session.User.Username}}</button></form>
+    {{else}}<a href="/login">用 linux.do 登录</a>{{end}}
+  </nav>
+</header>
+<main>
+{{template "content" .}}
+</main>
+<footer>众包 Cloudflare 优选 IP · 按运营商分池 · 数据每 5 分钟更新 · <a href="/api/v1/pools">API</a></footer>
+</body>
+</html>{{end}}

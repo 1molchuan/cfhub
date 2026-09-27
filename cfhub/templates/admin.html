@@ -1,0 +1,42 @@
+{{define "content"}}
+<h1>管理</h1>
+<h2>运营商池</h2>
+{{range .Pools}}
+<section class="card">
+  <h3>{{.Pool.Name}} IPv{{.Pool.Family}} — {{if .Pool.Published}}已发布{{else}}{{.Pool.Reason}}{{end}} · {{.Pool.Users}} 人 {{.Pool.Probers}} 台探针</h3>
+  {{if .Pool.IPs}}
+  <table>
+    <tr><th>IP</th><th>中位延迟</th><th>投票用户(台数)</th></tr>
+    {{range .Voters}}<tr><td><code>{{.IP}}</code></td><td>{{.MedianMS}} ms</td><td>{{range .Users}}<span class="tag">{{.}}</span>{{end}}</td></tr>{{end}}
+  </table>
+  {{end}}
+  {{if ne .Pool.ISP "other"}}
+  <form method="post" action="/admin/isp/{{.Pool.ISP}}/{{if .Suspended}}resume{{else}}suspend{{end}}" class="inline">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}"><button>{{if .Suspended}}恢复发布{{else}}暂停发布(DoH 中的池 30 分钟内过期){{end}}</button>
+  </form>
+  {{end}}
+</section>
+{{end}}
+
+<h2>用户({{len .Users}})</h2>
+<table>
+  <tr><th>id</th><th>用户名</th><th>TL</th><th>token</th><th>24h 上报</th><th>最近上报</th><th>运营商</th><th>一致率</th><th>状态</th><th>操作</th></tr>
+  {{range .Users}}
+  <tr class="{{if .Banned}}banned{{end}}">
+    <td>{{.ID}}</td><td>{{.Username}}</td><td>{{.TrustLevel}}</td><td>{{if .TokenPrefix}}<code>{{.TokenPrefix}}…</code>{{else}}—{{end}}</td>
+    <td>{{.Reports24h}}</td><td>{{if .LastReport}}{{fmtTime .LastReport}}{{else}}—{{end}}</td><td>{{ispName .LastISP}}</td>
+    <td>{{.Agreement}}</td>
+    <td>{{if .Banned}}已封禁{{if .BanReason}}({{.BanReason}}){{end}}{{else}}正常{{end}}</td>
+    <td>
+      {{if .Banned}}
+        <form method="post" action="/admin/user/{{.ID}}/unban" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>解封</button></form>
+      {{else}}
+        <form method="post" action="/admin/user/{{.ID}}/ban" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input name="reason" placeholder="原因" size="8"><button>封禁</button></form>
+      {{end}}
+      {{if .TokenPrefix}}<form method="post" action="/admin/user/{{.ID}}/revoke" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>吊销 token</button></form>{{end}}
+    </td>
+  </tr>
+  {{end}}
+</table>
+<p class="muted">一致率:该用户最近一次上报的前 6 个 IP 中,进入当前已发布池的比例。长期明显偏低可能是线路特殊,也可能是乱报;封禁后其上报立即不再参与投票。</p>
+{{end}}

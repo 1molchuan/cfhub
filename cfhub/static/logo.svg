@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1c2340"/>
+      <stop offset="1" stop-color="#10152a"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="276" cy="236" r="220" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f38020" stop-opacity=".42"/>
+      <stop offset="1" stop-color="#f38020" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="cloud" x1="0" y1="112" x2="0" y2="318" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffd166"/>
+      <stop offset=".5" stop-color="#fbad41"/>
+      <stop offset="1" stop-color="#f38020"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <circle cx="276" cy="236" r="220" fill="url(#glow)"/>
+
+  <!-- volunteer probes reporting up to the cloud -->
+  <g stroke="#fbad41" stroke-width="7" stroke-linecap="round" stroke-dasharray="1 17" opacity=".9">
+    <path d="M178 404 L210 322"/>
+    <path d="M280 416 L280 322"/>
+    <path d="M382 404 L350 322"/>
+  </g>
+  <g fill="none" stroke="#ffd166" stroke-width="4" opacity=".35">
+    <circle cx="178" cy="404" r="25"/>
+    <circle cx="280" cy="416" r="25"/>
+    <circle cx="382" cy="404" r="25"/>
+  </g>
+  <g fill="#ffd166">
+    <circle cx="178" cy="404" r="14"/>
+    <circle cx="280" cy="416" r="14"/>
+    <circle cx="382" cy="404" r="14"/>
+  </g>
+
+  <!-- speed lines -->
+  <g stroke-linecap="round" stroke-width="15">
+    <path d="M62 214 H134" stroke="#fbad41" opacity=".95"/>
+    <path d="M92 252 H138" stroke="#ffd166" opacity=".7"/>
+    <path d="M48 290 H132" stroke="#f38020" opacity=".85"/>
+  </g>
+
+  <!-- the cloud -->
+  <g fill="url(#cloud)">
+    <circle cx="214" cy="238" r="64"/>
+    <circle cx="298" cy="204" r="92"/>
+    <circle cx="378" cy="256" r="56"/>
+    <rect x="152" y="238" width="282" height="80" rx="40"/>
+  </g>
+  <path d="M238 170 A92 92 0 0 1 336 130" fill="none" stroke="#fff" stroke-width="12" stroke-linecap="round" opacity=".5"/>
+
+  <!-- sparkle -->
+  <path d="M414 118 l9 24 24 9 -24 9 -9 24 -9 -24 -24 -9 24 -9z" fill="#fff" opacity=".92"/>
+</svg>
