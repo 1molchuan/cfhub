@@ -530,6 +530,26 @@ func TestInstallerCarriesChecksums(t *testing.T) {
 			t.Fatalf("rendered install.sh does not parse: %v\n%s", err, out)
 		}
 	}
+	// Self-update: the binary sits in the state dir, auto-update can be turned off, and the signed
+	// manifest is downloadable (uncached) while other files in dist stay hidden.
+	if !strings.Contains(string(sh), "BIN=$STATE/cfprobe") || !strings.Contains(string(sh), `--no-auto-update) UPDATE=" -no-update"`) || !strings.Contains(string(sh), "history4.json$UPDATE") {
+		t.Fatal("install.sh does not install into the state dir with an auto-update switch")
+	}
+	if !strings.Contains(string(ps), "[switch]$NoAutoUpdate") || !strings.Contains(string(ps), `cfprobe.log"$update`) {
+		t.Fatal("install.ps1 has no -NoAutoUpdate switch")
+	}
+	for _, name := range []string{"manifest.json", "manifest.json.sig", "secret.key"} {
+		_ = os.WriteFile(filepath.Join(te.hub.cfg.DistDir, name), []byte(name), 0o644)
+	}
+	if resp := te.do(t, "GET", "/dl/manifest.json", "", "", nil); resp.StatusCode != 200 || resp.Header.Get("Cache-Control") != "no-cache" {
+		t.Fatalf("manifest: %d cache-control %q", resp.StatusCode, resp.Header.Get("Cache-Control"))
+	}
+	if resp := te.do(t, "GET", "/dl/manifest.json.sig", "", "", nil); resp.StatusCode != 200 {
+		t.Fatalf("manifest signature: %d", resp.StatusCode)
+	}
+	if resp := te.do(t, "GET", "/dl/secret.key", "", "", nil); resp.StatusCode != 404 {
+		t.Fatalf("a file outside the allowlist was served: %d", resp.StatusCode)
+	}
 }
 
 func TestPagesRender(t *testing.T) {

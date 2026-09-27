@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # cfhub volunteer prober installer (Linux, systemd).
-#   Install:   curl -fsSL {{.PublicURL}}/install.sh | sudo bash -s -- <TOKEN>
+#   Install:   curl -fsSL {{.PublicURL}}/install.sh | sudo bash -s -- <TOKEN> [--no-auto-update]
 #   Uninstall: curl -fsSL {{.PublicURL}}/install.sh | sudo bash -s -- --uninstall
 # Runs hourly as an unprivileged system user; opens no ports; the binary is checksum-verified.
+# The binary lives in the prober's own state directory so it can install newer releases itself;
+# it only accepts releases signed by the maintainer's offline key (see selfupdate.go in the source).
 set -euo pipefail
 HUB="{{.PublicURL}}"
-BIN=/usr/local/bin/cfprobe
-CONF=/etc/cfprobe
 STATE=/var/lib/cfprobe
+BIN=$STATE/cfprobe
+LEGACY_BIN=/usr/local/bin/cfprobe
+CONF=/etc/cfprobe
 UNIT=/etc/systemd/system/cfprobe.service
 TIMER=/etc/systemd/system/cfprobe.timer
 die() { echo "cfprobe: $*" >&2; exit 1; }
@@ -18,7 +21,7 @@ command -v systemctl >/dev/null || die "systemd is required"
 if [ "${1:-}" = "--uninstall" ]; then
   systemctl disable --now cfprobe.timer 2>/dev/null || true
   systemctl stop cfprobe.service 2>/dev/null || true
-  rm -f "$UNIT" "$TIMER" "$BIN"
+  rm -f "$UNIT" "$TIMER" "$LEGACY_BIN"
   rm -rf "$CONF" "$STATE"
   systemctl daemon-reload
   if id cfprobe >/dev/null 2>&1; then userdel cfprobe || true; fi
@@ -27,7 +30,13 @@ if [ "${1:-}" = "--uninstall" ]; then
 fi
 
 TOKEN="${1:-}"
-[[ "$TOKEN" =~ ^cfp_[A-Za-z0-9_-]{20,60}$ ]] || die "usage: curl -fsSL $HUB/install.sh | sudo bash -s -- <TOKEN>   (get a token at $HUB/join)"
+[[ "$TOKEN" =~ ^cfp_[A-Za-z0-9_-]{20,60}$ ]] || die "usage: curl -fsSL $HUB/install.sh | sudo bash -s -- <TOKEN> [--no-auto-update]   (get a token at $HUB/join)"
+UPDATE=""
+case "${2:-}" in
+  "") ;;
+  --no-auto-update) UPDATE=" -no-update" ;;
+  *) die "unknown option ${2}" ;;
+esac
 
 case "$(uname -m)" in
   x86_64|amd64)  ARCH=amd64; SHA={{.SHA.amd64}} ;;
@@ -51,13 +60,15 @@ done
 [ -n "$OK" ] || die "no source gave a binary matching the checksum, refusing to install"
 
 id cfprobe >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin cfprobe
-install -m 0755 "$TMP" "$BIN"
+systemctl stop cfprobe.service 2>/dev/null || true
+install -d -m 0750 -o cfprobe -g cfprobe "$STATE"
+install -m 0755 -o cfprobe -g cfprobe "$TMP" "$BIN"
+rm -f "$LEGACY_BIN" # installs before self-update kept the binary here
 install -d -m 0750 -o root -g cfprobe "$CONF"
 umask 077
 printf '%s' "$TOKEN" > "$CONF/token"
 chown root:cfprobe "$CONF/token"
 chmod 0640 "$CONF/token"
-install -d -m 0750 -o cfprobe -g cfprobe "$STATE"
 
 cat > "$UNIT" <<EOF
 [Unit]
@@ -69,9 +80,9 @@ After=network-online.target
 Type=oneshot
 User=cfprobe
 Group=cfprobe
-ExecStart=$BIN -hub $HUB -token-file $CONF/token -history $STATE/history4.json
+ExecStart=$BIN -hub $HUB -token-file $CONF/token -history $STATE/history4.json$UPDATE
 # IPv6 is optional: without it this run just fails and is ignored.
-ExecStart=-$BIN -hub $HUB -token-file $CONF/token -history $STATE/history6.json -family 6
+ExecStart=-$BIN -hub $HUB -token-file $CONF/token -history $STATE/history6.json -family 6$UPDATE
 TimeoutStartSec=20min
 Nice=10
 NoNewPrivileges=true
@@ -98,5 +109,5 @@ EOF
 systemctl daemon-reload
 systemctl enable --now cfprobe.timer
 systemctl start --no-block cfprobe.service
-echo "cfprobe installed. The first report shows up within a few minutes at $HUB/me"
+echo "cfprobe installed$([ -n "$UPDATE" ] && echo " (auto-update off)"). The first report shows up within a few minutes at $HUB/me"
 echo "Logs: journalctl -u cfprobe -n 50"

@@ -108,6 +108,7 @@ func main() {
 	githubResolver := flag.String("github-resolver", "", "DNS server (host:port, e.g. 223.5.5.5:53) to resolve -github source URLs; for probers with an unreliable system resolver")
 	hub := flag.String("hub", "", "volunteer mode: report to this cfhub (e.g. https://cfhub.1molchuan.top) with a personal token; -rank, -resolve-doh, -sample-* and the pacing flags default to built-in values")
 	hubTokenFile := flag.String("token-file", "", "read the cfhub volunteer token from this file (or set CFHUB_TOKEN)")
+	noUpdate := flag.Bool("no-update", false, "-hub mode: do not install newer signed releases (see selfupdate.go)")
 	budget := flag.Duration("budget", 0, "rank/report/hub/sitecheck: stop starting new tests after this long and report what was measured (keep it a few minutes under the unit's timeout); 0 = no limit")
 	maxKnownFlag := flag.Int("max-known", 300, "re-test at most this many IPs from -history per run, best first")
 	siteURLs := flag.String("sitecheck", "", "comma-separated URLs (e.g. https://linux.do/srv/status): fetch them through the general pool over ECH; report sites whose origin hangs, with IPs verified end to end")
@@ -214,7 +215,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "-hub needs a token: -token-file or CFHUB_TOKEN (get one at "+strings.TrimRight(*hub, "/")+"/join)")
 			os.Exit(2)
 		}
-		hubRun(*doh, *resolveDoh, *rank, *rankTarget, *rounds, *timeout, *hub, token, *historyPath)
+		hubRun(*doh, *resolveDoh, *rank, *rankTarget, *rounds, *timeout, *hub, token, *historyPath, !*noUpdate)
 		return
 	}
 

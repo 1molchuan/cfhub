@@ -15,15 +15,27 @@
 安装脚本（`cfhub/scripts/install.sh.tmpl`、`install.ps1.tmpl`）做的事：
 
 1. 下载 `cfprobe`，核对 sha256，对不上就拒绝安装。先从镜像下载，失败再从 cfhub 本站下载。
-2. Linux：建一个无登录权限的系统用户 `cfprobe`；token 存在 `/etc/cfprobe/token`（仅 root 和 cfprobe 组可读）；装一个每小时运行一次的 systemd timer。Windows：文件放在 `%ProgramData%\cfprobe`，只有 SYSTEM 和管理员可读，并注册一个每小时运行的计划任务。
+2. Linux：建一个无登录权限的系统用户 `cfprobe`；程序和状态文件放在 `/var/lib/cfprobe`（属于 cfprobe 用户）；token 存在 `/etc/cfprobe/token`（仅 root 和 cfprobe 组可读）；装一个每小时运行一次的 systemd timer，以 cfprobe 用户运行，除 `/var/lib/cfprobe` 外文件系统只读。Windows：文件放在 `%ProgramData%\cfprobe`，只有 SYSTEM 和管理员可读，并注册一个每小时运行的计划任务。
 3. 每次运行两条命令：
 
 ```
-cfprobe -hub https://cfhub.1molchuan.top -token-file /etc/cfprobe/token -history /var/lib/cfprobe/history4.json
-cfprobe -hub https://cfhub.1molchuan.top -token-file /etc/cfprobe/token -history /var/lib/cfprobe/history6.json -family 6
+/var/lib/cfprobe/cfprobe -hub https://cfhub.1molchuan.top -token-file /etc/cfprobe/token -history /var/lib/cfprobe/history4.json
+/var/lib/cfprobe/cfprobe -hub https://cfhub.1molchuan.top -token-file /etc/cfprobe/token -history /var/lib/cfprobe/history6.json -family 6
 ```
 
 不开放任何端口，不代理任何流量，不修改系统 DNS 或网络设置。卸载：`curl -fsSL https://cfhub.1molchuan.top/install.sh | sudo bash -s -- --uninstall`，会删除程序、配置、状态文件、systemd 单元和系统用户。
+
+### 自动更新（`echprobe/selfupdate.go`）
+
+每次运行开始时，探针会下载 `manifest.json` 和它的签名 `manifest.json.sig`（约 500 字节），检查有没有新版本。同时满足下面三条才会更新：
+
+- **签名有效**：清单由维护者的 ed25519 私钥签名。私钥只保存在维护者自己的电脑上，从不上传到服务器；公钥写死在源码里（`releasePublicKey`）。所以 cfhub 服务器或下载镜像即使被人控制，也推不了程序。
+- **版本号更大**：清单里的 `seq` 必须大于当前程序的 `releaseSeq`。旧版本的清单即使签名有效，也不能拿来把你降级。
+- **校验和一致**：下载的程序必须和签名清单里的 sha256 完全一致。
+
+更新以 cfprobe 用户权限进行，只替换 `/var/lib/cfprobe/cfprobe`（Windows 是 `cfprobe.exe`），从下一次运行起生效。任何一步失败都只记一条日志，继续用当前版本测速。
+
+不想自动更新，安装时加参数：Linux 在 token 后面加 `--no-auto-update`，Windows 加 `-NoAutoUpdate`。之后想升级，就重新运行一次安装命令。
 
 ### 一次运行的过程（`echprobe/hub.go`）
 
@@ -35,7 +47,7 @@ cfprobe -hub https://cfhub.1molchuan.top -token-file /etc/cfprobe/token -history
 6. 上报（`POST /api/v1/probe/report`），内容就是下面这些，没有别的：
 
 ```json
-{"family": 4, "version": "cfprobe/1",
+{"family": 4, "version": "cfprobe/3",
  "ips": [{"ip": "104.16.1.1", "median_ms": 180, "ok": 6, "rounds": 6}, ...]}
 ```
 
@@ -52,17 +64,32 @@ cfprobe -hub https://cfhub.1molchuan.top -token-file /etc/cfprobe/token -history
 
 ## 自己核对程序
 
-发布的程序可以从源码逐字节复现。用 Go 1.26.1：
+发布的程序可以从源码逐字节复现。用 Go 1.26.1，签出与发布版本号（`echprobe/selfupdate.go` 里的 `releaseSeq`）对应的提交，然后：
 
 ```bash
-cd echprobe
-GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o cfprobe-linux-amd64 .
-GOOS=linux   GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o cfprobe-linux-arm64 .
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o cfprobe-windows-amd64.exe .
-sha256sum cfprobe-*
+./build.sh            # 在 dist/ 下编出三个平台的程序并打印 sha256
 ```
 
-把结果和 `curl -s https://cfhub.1molchuan.top/install.sh` 里的 `SHA=`，以及 `install.ps1` 里的哈希对比，应该完全一致。
+`build.sh` 用的编译参数是 `CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags="-s -w"`。`-buildvcs=false` 不能省：在 git 仓库里编译时，Go 默认会把提交号写进程序，结果就对不上了。
+
+把结果和线上的签名清单对比，应该完全一致：
+
+```bash
+curl -s https://cfhub.1molchuan.top/dl/manifest.json
+```
+
+清单签名也可以自己验证：公钥就是 `echprobe/selfupdate.go` 里的 `releasePublicKey`，签名是 `manifest.json.sig` 的内容（base64），签名对象是 `manifest.json` 的原始字节。
+
+### 维护者发版
+
+```bash
+# 1. 把 echprobe/selfupdate.go 里的 releaseSeq 加 1，提交并推送
+./build.sh
+(cd cfhub && go run ./cmd/cfrelease -key <私钥文件> -seq <新版本号> -dist ../dist -sources https://edge.1molchuan.top/cfprobe)
+# 2. 把 dist/ 里的三个程序和 manifest.json、manifest.json.sig 复制到 cfhub 的 dist 目录；清单最后放
+```
+
+私钥用 `cfrelease -genkey` 生成，只保存在自己的电脑上。
 
 ## 线路分类
 

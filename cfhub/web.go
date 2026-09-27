@@ -470,7 +470,8 @@ func (h *Hub) handleInstaller(script string) http.HandlerFunc {
 // GET /dl/{name}
 func (h *Hub) handleDownload(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	allowed := false
+	// The signed release manifest (cmd/cfrelease) is served as is; probers verify it themselves.
+	allowed := name == "manifest.json" || name == "manifest.json.sig"
 	for _, file := range distFiles {
 		allowed = allowed || file == name
 	}
@@ -480,6 +481,9 @@ func (h *Hub) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", "attachment; filename="+name)
+	if strings.HasPrefix(name, "manifest.") {
+		w.Header().Set("Cache-Control", "no-cache") // a CDN mirror must not hold back a release
+	}
 	http.ServeFile(w, r, filepath.Join(h.cfg.DistDir, name))
 }
 

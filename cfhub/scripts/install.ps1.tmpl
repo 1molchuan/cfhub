@@ -1,8 +1,10 @@
 # cfhub volunteer prober installer (Windows). In an elevated PowerShell:
-#   Install:   & ([scriptblock]::Create((irm {{.PublicURL}}/install.ps1))) -Token <TOKEN>
+#   Install:   & ([scriptblock]::Create((irm {{.PublicURL}}/install.ps1))) -Token <TOKEN> [-NoAutoUpdate]
 #   Uninstall: & ([scriptblock]::Create((irm {{.PublicURL}}/install.ps1))) -Uninstall
 # Runs hourly as SYSTEM from %ProgramData%\cfprobe (readable only by SYSTEM and Administrators).
-param([string]$Token, [switch]$Uninstall)
+# The prober installs newer releases itself, only if signed by the maintainer's offline key
+# (see selfupdate.go in the source); -NoAutoUpdate turns that off.
+param([string]$Token, [switch]$Uninstall, [switch]$NoAutoUpdate)
 $ErrorActionPreference = 'Stop'
 $Hub = '{{.PublicURL}}'
 $Dir = Join-Path $env:ProgramData 'cfprobe'
@@ -45,14 +47,16 @@ if (-not $ok) {
   Remove-Item -Force $tmp -ErrorAction SilentlyContinue
   throw 'No source gave a binary matching the checksum, refusing to install.'
 }
+Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue # a running cfprobe.exe cannot be replaced
 Move-Item -Force $tmp $exe
+$update = if ($NoAutoUpdate) { ' -no-update' } else { '' }
 Set-Content -NoNewline -Encoding ascii -Path (Join-Path $Dir 'token') -Value $Token
 
 $run = Join-Path $Dir 'run.cmd'
 @"
 @echo off
-"%~dp0cfprobe.exe" -hub $Hub -token-file "%~dp0token" -history "%~dp0history4.json" -log "%~dp0cfprobe.log"
-"%~dp0cfprobe.exe" -hub $Hub -token-file "%~dp0token" -history "%~dp0history6.json" -log "%~dp0cfprobe.log" -family 6
+"%~dp0cfprobe.exe" -hub $Hub -token-file "%~dp0token" -history "%~dp0history4.json" -log "%~dp0cfprobe.log"$update
+"%~dp0cfprobe.exe" -hub $Hub -token-file "%~dp0token" -history "%~dp0history6.json" -log "%~dp0cfprobe.log" -family 6$update
 exit /b 0
 "@ | Set-Content -Encoding ascii -Path $run
 

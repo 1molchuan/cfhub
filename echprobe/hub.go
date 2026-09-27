@@ -18,8 +18,6 @@ import (
 // the report with this line's operator and votes a pool per operator; nothing here can touch the
 // DoH directly. Built-in defaults below, so volunteers need only the hub URL and their token.
 
-const probeVersion = "cfprobe/1"
-
 // Candidate "preferred domains" and Cloudflare ranges, the same the core probers use
 // (deploy/prober/windows/run.cmd).
 const (
@@ -102,12 +100,21 @@ func postHubReport(hub, token string, body []byte) (int, string, error) {
 	return resp.StatusCode, string(bytes.TrimSpace(reply)), nil
 }
 
-func hubRun(doh, resolver, candidates, target string, rounds int, timeout time.Duration, hub, token, historyPath string) {
+func hubRun(doh, resolver, candidates, target string, rounds int, timeout time.Duration, hub, token, historyPath string, update bool) {
 	hub = strings.TrimRight(hub, "/")
 	local := func(u *url.URL) bool { return u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost" }
 	if u, err := url.Parse(hub); err != nil || (u.Scheme != "https" && !local(u)) {
 		fmt.Fprintln(os.Stderr, "-hub must be an https URL") // the token must never travel in clear text
 		os.Exit(2)
+	}
+	fmt.Fprintf(os.Stderr, "%s\n", probeVersion)
+	if update {
+		cleanupOldExecutable()
+		if seq, err := selfUpdate(hub); err != nil {
+			fmt.Fprintln(os.Stderr, "self-update skipped:", err)
+		} else if seq > 0 {
+			fmt.Fprintf(os.Stderr, "updated to signed release %d; it runs from the next run on\n", seq)
+		}
 	}
 	hist, known := loadKnown(historyPath)
 	var peers []string
