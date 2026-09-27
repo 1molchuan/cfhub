@@ -31,6 +31,7 @@ type manifest struct {
 	Seq     int               `json:"seq"`
 	Files   map[string]string `json:"files"`
 	Sources []string          `json:"sources"`
+	API     []string          `json:"api,omitempty"`
 }
 
 func main() {
@@ -39,6 +40,7 @@ func main() {
 	seq := flag.Int("seq", 0, "release number; must equal releaseSeq in the binaries being released")
 	dist := flag.String("dist", "", "directory holding the cfprobe binaries")
 	sources := flag.String("sources", "", "comma-separated https base URLs serving the binaries (the hub's /dl is always tried last)")
+	api := flag.String("api", "", "comma-separated https base URLs proxying the hub's /api/v1/probe/* (the hub itself is always tried last)")
 	flag.Parse()
 
 	if *genkey != "" {
@@ -69,14 +71,8 @@ func main() {
 		sum := sha256.Sum256(body)
 		m.Files[name] = hex.EncodeToString(sum[:])
 	}
-	for _, s := range strings.Split(*sources, ",") {
-		if s = strings.TrimRight(strings.TrimSpace(s), "/"); s != "" {
-			if !strings.HasPrefix(s, "https://") {
-				fail("source %q is not https", s)
-			}
-			m.Sources = append(m.Sources, s)
-		}
-	}
+	m.Sources = httpsList(*sources)
+	m.API = httpsList(*api)
 	body, err := json.MarshalIndent(m, "", "  ")
 	check(err)
 	body = append(body, '\n')
@@ -95,6 +91,20 @@ func main() {
 	for _, name := range names {
 		fmt.Printf("  %s  %s\n", m.Files[name], name)
 	}
+}
+
+// httpsList splits a comma-separated list of https base URLs, refusing anything else.
+func httpsList(list string) []string {
+	out := []string{}
+	for _, s := range strings.Split(list, ",") {
+		if s = strings.TrimRight(strings.TrimSpace(s), "/"); s != "" {
+			if !strings.HasPrefix(s, "https://") {
+				fail("%q is not an https URL", s)
+			}
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func check(err error) {

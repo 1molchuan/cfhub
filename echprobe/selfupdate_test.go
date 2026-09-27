@@ -117,7 +117,11 @@ func TestSelfUpdateInstallsOnlyASignedNewerMatchingRelease(t *testing.T) {
 				m.Sources = []string{hub + "/mirror"}
 				rel.manifest, rel.sig = signed(t, priv, m)
 			}
-			seq, err := selfUpdate(hub)
+			m, err := loadManifest(hub)
+			seq := 0
+			if err == nil {
+				seq, err = selfUpdate(hub, m)
+			}
 			if seq != tc.wantSeq || (tc.wantErr == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), tc.wantErr)) {
 				t.Fatalf("selfUpdate = %d, %v; want %d, error containing %q", seq, err, tc.wantSeq, tc.wantErr)
 			}

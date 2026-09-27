@@ -25,7 +25,7 @@ import (
 // prober's own state directory); the new one takes effect at the next run. -no-update turns it off.
 
 // releaseSeq is this build's release number. Bump it for every release, before building.
-const releaseSeq = 3
+const releaseSeq = 5
 
 // releasePublicKey verifies release manifests (base64, ed25519).
 const releasePublicKey = "pZvca84iii/7oUhLtAuvGls4U5dNbh64pCqhJnDTZps="
@@ -36,6 +36,10 @@ type releaseManifest struct {
 	Seq     int               `json:"seq"`
 	Files   map[string]string `json:"files"`   // "cfprobe-linux-amd64" -> hex sha256
 	Sources []string          `json:"sources"` // base URLs serving the files, tried in order
+	// API lists base URLs that proxy the hub's /api/v1/probe/* (e.g. a CDN that mainland lines reach
+	// better than the hub itself), tried in order before the hub. It comes from the signed manifest,
+	// so a hub or mirror cannot redirect reports, and the route can change without a new binary.
+	API []string `json:"api,omitempty"`
 }
 
 const maxReleaseBinary = 64 << 20
@@ -92,21 +96,23 @@ func fetchLimited(url string, limit int64) ([]byte, error) {
 	return body, nil
 }
 
-// selfUpdate installs a newer signed release, if the hub offers one. It returns the new seq when it
-// replaced the binary, 0 otherwise. Errors are for logging only: the run goes on with this binary.
-func selfUpdate(hub string) (int, error) {
+// loadManifest fetches the hub's release manifest and verifies its signature.
+func loadManifest(hub string) (releaseManifest, error) {
 	raw, err := fetchLimited(hub+"/dl/manifest.json", 64<<10)
 	if err != nil {
-		return 0, err
+		return releaseManifest{}, err
 	}
 	sig, err := fetchLimited(hub+"/dl/manifest.json.sig", 4<<10)
 	if err != nil {
-		return 0, err
+		return releaseManifest{}, err
 	}
-	m, err := verifyManifest(raw, sig, updatePublicKey)
-	if err != nil {
-		return 0, err
-	}
+	return verifyManifest(raw, sig, updatePublicKey)
+}
+
+// selfUpdate installs the release m describes if it is newer than this build. It returns the new seq
+// when it replaced the binary, 0 otherwise. Errors are for logging only: the run goes on with this
+// binary.
+func selfUpdate(hub string, m releaseManifest) (int, error) {
 	if m.Seq <= releaseSeq {
 		return 0, nil // up to date (or an old manifest)
 	}

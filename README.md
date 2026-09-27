@@ -37,9 +37,17 @@
 
 不想自动更新，安装时加参数：Linux 在 token 后面加 `--no-auto-update`，Windows 加 `-NoAutoUpdate`。之后想升级，就重新运行一次安装命令。
 
+### 上报走哪条路
+
+签名清单里还有一项 `api`：转发 cfhub 探针接口（`/api/v1/probe/*`）的地址。目前是 `https://edge.1molchuan.top`，这是一个香港 CDN 边缘节点，大陆线路连它比直连 cfhub 源站稳定。探针按顺序尝试：先走清单里的地址，连不上（超时、连接失败）再直连 cfhub。只要收到 HTTP 响应（包括拒绝），就不会再换路线重发，所以同一份上报不会发两次。
+
+这个地址写在签名清单里，所以 cfhub 服务器或镜像改不了你的上报去向；以后要换路线，也只需重新签一份清单，不用发新版本。即使关闭了自动更新，也会用清单里的地址。
+
+需要知道的是：走这条路时，HTTPS 连接在 CDN 节点上解开，再由节点转发给 cfhub。所以 CDN 节点能看到你的 token、上报内容和你的 IP。CDN 节点会把你的真实 IP 通过 `X-Real-IP` 转给 cfhub，用于判断线路类别。日志里的 `... via https://...` 会写明每次请求走的是哪条路。
+
 ### 一次运行的过程（`echprobe/hub.go`）
 
-1. 向 cfhub 要候选 IP（`GET /api/v1/probe/candidates`）：你所在线路类别的当前池，加上同类线路其他探针最近上报的前几名。
+1. 向 cfhub 要候选 IP（`GET /api/v1/probe/candidates`，路线见上一节）：你所在线路类别的当前池，加上同类线路其他探针最近上报的前几名。
 2. 收集更多候选：内置的 26 个社区优选域名，每个随机取 6 个 IP，通过 AliDNS（`https://223.5.5.5/dns-query`）解析；再从 Cloudflare 网段随机抽 30 个；加上本机历史上表现最好的 150 个。
 3. 从 edge DoH（`https://edge.1molchuan.top/dns-query`）取 Cloudflare 当前的 ECH 公钥。
 4. 对每个候选 IP 做 6 次 TLS 握手，交替用 `x.com` 和 `linux.do` 作为目标，内层域名用 ECH 加密，外层是 Cloudflare 公共的 `cloudflare-ech.com`。每次握手后请求一次 `/cdn-cgi/trace`，必须返回 200，失败一次就不再测这个 IP。同时最多测 6 个 IP，一轮最多 8 分钟。
@@ -47,7 +55,7 @@
 6. 上报（`POST /api/v1/probe/report`），内容就是下面这些，没有别的：
 
 ```json
-{"family": 4, "version": "cfprobe/3",
+{"family": 4, "version": "cfprobe/5",
  "ips": [{"ip": "104.16.1.1", "median_ms": 180, "ok": 6, "rounds": 6}, ...]}
 ```
 
@@ -85,7 +93,7 @@ curl -s https://cfhub.1molchuan.top/dl/manifest.json
 ```bash
 # 1. 把 echprobe/selfupdate.go 里的 releaseSeq 加 1，提交并推送
 ./build.sh
-(cd cfhub && go run ./cmd/cfrelease -key <私钥文件> -seq <新版本号> -dist ../dist -sources https://edge.1molchuan.top/cfprobe)
+(cd cfhub && go run ./cmd/cfrelease -key <私钥文件> -seq <新版本号> -dist ../dist -sources https://edge.1molchuan.top/cfprobe -api https://edge.1molchuan.top)
 # 2. 把 dist/ 里的三个程序和 manifest.json、manifest.json.sig 复制到 cfhub 的 dist 目录；清单最后放
 ```
 

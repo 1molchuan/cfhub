@@ -45,16 +45,51 @@ type hubCandidates struct {
 	IPs  []string `json:"ips"`
 }
 
+// apiBases lists where to reach the probe API: the signed manifest's routes (https only), then the
+// hub itself.
+func apiBases(m releaseManifest, hub string) []string {
+	var out []string
+	for _, base := range m.API {
+		if base = strings.TrimRight(base, "/"); strings.HasPrefix(base, "https://") && base != hub {
+			out = append(out, base)
+		}
+	}
+	return append(out, hub)
+}
+
+// callHubAPI sends one request to the first route that answers: a transport failure (timeout,
+// reset) moves on to the next route, while any HTTP response, even an error, is final.
+func callHubAPI(apis []string, method, path, token string, body []byte) (*http.Response, error) {
+	var lastErr error
+	for _, base := range apis {
+		var reader io.Reader
+		if body != nil {
+			reader = bytes.NewReader(body)
+		}
+		req, err := http.NewRequest(method, base+path, reader)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := hubClient.Do(req)
+		if err == nil {
+			fmt.Fprintf(os.Stderr, "%s %s via %s: HTTP %d\n", method, strings.SplitN(path, "?", 2)[0], base, resp.StatusCode)
+			return resp, nil
+		}
+		fmt.Fprintf(os.Stderr, "%s unreachable (%v), trying the next route\n", base, err)
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
 // fetchHubCandidates asks the hub what to re-test: this operator's current pool and the top of
 // other volunteers' recent reports on it, so independent probers converge on common IPs.
-func fetchHubCandidates(hub, token string, family int) (hubCandidates, error) {
+func fetchHubCandidates(apis []string, token string, family int) (hubCandidates, error) {
 	var out hubCandidates
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/v1/probe/candidates?family=%d", hub, family), nil)
-	if err != nil {
-		return out, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := hubClient.Do(req)
+	resp, err := callHubAPI(apis, http.MethodGet, fmt.Sprintf("/api/v1/probe/candidates?family=%d", family), token, nil)
 	if err != nil {
 		return out, err
 	}
@@ -83,15 +118,9 @@ func hubReportBody(ranked []rankedIP, family int) []byte {
 }
 
 // postHubReport sends the report; the status code is returned so the caller can tell a refusal
-// (bad token, too soon) from a transport failure (err != nil, worth one retry).
-func postHubReport(hub, token string, body []byte) (int, string, error) {
-	req, err := http.NewRequest(http.MethodPost, hub+"/api/v1/probe/report", bytes.NewReader(body))
-	if err != nil {
-		return 0, "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := hubClient.Do(req)
+// (bad token, too soon) from a transport failure on every route (err != nil, worth one retry).
+func postHubReport(apis []string, token string, body []byte) (int, string, error) {
+	resp, err := callHubAPI(apis, http.MethodPost, "/api/v1/probe/report", token, body)
 	if err != nil {
 		return 0, "", err
 	}
@@ -108,17 +137,24 @@ func hubRun(doh, resolver, candidates, target string, rounds int, timeout time.D
 		os.Exit(2)
 	}
 	fmt.Fprintf(os.Stderr, "%s\n", probeVersion)
-	if update {
-		cleanupOldExecutable()
-		if seq, err := selfUpdate(hub); err != nil {
-			fmt.Fprintln(os.Stderr, "self-update skipped:", err)
-		} else if seq > 0 {
-			fmt.Fprintf(os.Stderr, "updated to signed release %d; it runs from the next run on\n", seq)
+	// The signed manifest names the release and any faster routes to the hub's probe API.
+	apis := []string{hub}
+	if m, err := loadManifest(hub); err != nil {
+		fmt.Fprintln(os.Stderr, "release manifest unavailable (reporting to the hub directly):", err)
+	} else {
+		apis = apiBases(m, hub)
+		if update {
+			cleanupOldExecutable()
+			if seq, err := selfUpdate(hub, m); err != nil {
+				fmt.Fprintln(os.Stderr, "self-update skipped:", err)
+			} else if seq > 0 {
+				fmt.Fprintf(os.Stderr, "updated to signed release %d; it runs from the next run on\n", seq)
+			}
 		}
 	}
 	hist, known := loadKnown(historyPath)
 	var peers []string
-	if hubPeers, err := fetchHubCandidates(hub, token, ipFamily); err != nil {
+	if hubPeers, err := fetchHubCandidates(apis, token, ipFamily); err != nil {
 		fmt.Fprintln(os.Stderr, "hub candidates unavailable (continuing without):", err)
 	} else {
 		fmt.Fprintf(os.Stderr, "hub: this line is %s (%s); %d candidates from the hub\n", hubPeers.Name, hubPeers.ISP, len(hubPeers.IPs))
@@ -151,8 +187,9 @@ func hubRun(doh, resolver, candidates, target string, rounds int, timeout time.D
 		reply  string
 		err    error
 	)
+	// Each route once, then all of them again: a transport failure moves on, any HTTP answer is final.
 	for attempt := 1; attempt <= 2; attempt++ {
-		if status, reply, err = postHubReport(hub, token, body); err == nil {
+		if status, reply, err = postHubReport(apis, token, body); err == nil {
 			break
 		}
 		fmt.Fprintln(os.Stderr, "report failed, retrying:", err)
