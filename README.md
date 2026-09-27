@@ -105,7 +105,11 @@ curl -s https://cfhub.1molchuan.top/dl/manifest.json
 - 国内云厂商（阿里云、腾讯云、华为云、百度智能云、火山引擎、京东云、金山云）：取各家国内机房的 AS 号，每天从 RIPEstat 拉取这些 AS 宣告的网段。各家的海外 AS 不算在内。
 - 其他：境外线路和其他网络。只在看板上展示，不单独分池。
 
-上报者的 IP 只信任反向代理（Caddy 的 `header_up X-Real-IP {remote_host}`）写入的地址，客户端自己带的 `X-Real-IP` 无效。
+上报者的 IP 取自反向代理写入的 `X-Real-IP`：
+- 直连 cfhub 时，由 Caddy 用 TCP 对端地址覆盖（`header_up X-Real-IP {remote_host}`），客户端自己带的 `X-Real-IP` 无效。
+- 经 CDN 节点转发时，使用节点传来的 `X-Real-IP`。
+
+目前没有校验请求是否真的来自 CDN 节点。所以绕过节点、直接连源站并伪造这个头的人，可以冒充别的线路。在它被滥用之前，这个风险由投票规则兜底：每个 IP 都要有 2 个以上不同的人认可才能入池。
 
 ## 投票规则（`cfhub/aggregate.go`、`cfhub/rank.go`）
 
