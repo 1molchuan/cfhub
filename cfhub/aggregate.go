@@ -19,12 +19,21 @@ type poolKey struct {
 }
 
 type PoolIP struct {
-	IP       string  `json:"ip"`
-	MedianMS int     `json:"median_ms"`
-	Votes    int     `json:"votes"` // probers that vouch for it
-	Users    int     `json:"users"` // distinct users behind those probers
-	voters   []int64 // user id per vouching prober, for the admin view only
+	IP       string   `json:"ip"`
+	MedianMS int      `json:"median_ms"`
+	Votes    int      `json:"votes"`           // probers that vouch for it
+	Users    int      `json:"users"`           // distinct users behind those probers
+	Lines    []string `json:"lines,omitempty"` // nationwide pool: the lines whose pools include it
+	voters   []int64  // user id per vouching prober, for the admin view only
 }
+
+// nationalISP keys the nationwide pool, combined from every mainland line's published pool (see
+// national) and pushed to the DoH as "isp:national".
+const nationalISP = "national"
+
+// minNationalLines is how many lines need a published pool before the nationwide pool is published:
+// a single line's pool is that line's, not a nationwide one.
+const minNationalLines = 2
 
 type Pool struct {
 	ISP       string   `json:"isp"`
@@ -123,7 +132,117 @@ func aggregate(reports []Report, quorum, size int, suspended map[string]bool) ma
 		}
 		pools[key] = pool
 	}
+	for _, family := range []int{4, 6} {
+		var lines []string
+		users := map[int64]bool{}
+		for _, isp := range operators {
+			key := poolKey{isp, family}
+			if p := pools[key]; p != nil && p.Published {
+				lines = append(lines, isp)
+				for id := range perUser[key] {
+					users[id] = true
+				}
+			}
+		}
+		if len(lines) > 0 {
+			pools[poolKey{nationalISP, family}] = national(pools, lines, family, size, len(users), suspended[nationalISP])
+		}
+	}
 	return pools
+}
+
+// national combines the published pools of the mainland lines (carriers, CERNET, domestic clouds; not
+// "other") into one pool for clients on none of them, and for the address family a line lacks. Each
+// line counts once however many probers it has, so the pool favours IPs that are good on several
+// lines: those in the most line pools first (then by average rank), then each line's own best in
+// turn, at most maxPerBlock per /24. Every input already passed its line's quorum and minBackers.
+func national(pools map[poolKey]*Pool, lines []string, family, size, users int, suspended bool) *Pool {
+	pool := &Pool{ISP: nationalISP, Name: operatorNames[nationalISP], Family: family, IPs: []PoolIP{}, Users: users}
+	type entry struct {
+		lines   []string
+		rankSum int
+		medians []int
+		votes   int
+		voters  []int64
+	}
+	entries := map[string]*entry{}
+	var lists [][]PoolIP
+	for _, isp := range lines {
+		p := pools[poolKey{isp, family}]
+		pool.Probers += p.Probers
+		lists = append(lists, p.IPs)
+		for rank, ip := range p.IPs {
+			e := entries[ip.IP]
+			if e == nil {
+				e = &entry{}
+				entries[ip.IP] = e
+			}
+			e.lines = append(e.lines, isp)
+			e.rankSum += rank
+			e.medians = append(e.medians, ip.MedianMS)
+			e.votes += ip.Votes
+			e.voters = append(e.voters, ip.voters...)
+		}
+	}
+	perBlock := map[string]int{}
+	var poolMedians []int
+	add := func(ip string) {
+		if len(pool.IPs) >= size || slices.ContainsFunc(pool.IPs, func(p PoolIP) bool { return p.IP == ip }) || perBlock[addressBlock(ip)] >= maxPerBlock {
+			return
+		}
+		perBlock[addressBlock(ip)]++
+		e := entries[ip]
+		distinct := map[int64]bool{}
+		for _, id := range e.voters {
+			distinct[id] = true
+		}
+		m := median(e.medians)
+		pool.IPs = append(pool.IPs, PoolIP{IP: ip, MedianMS: m, Votes: e.votes, Users: len(distinct), Lines: e.lines, voters: e.voters})
+		poolMedians = append(poolMedians, m)
+	}
+	var shared []string
+	for ip, e := range entries {
+		if len(e.lines) >= 2 {
+			shared = append(shared, ip)
+		}
+	}
+	sort.Slice(shared, func(i, j int) bool {
+		a, b := entries[shared[i]], entries[shared[j]]
+		if len(a.lines) != len(b.lines) {
+			return len(a.lines) > len(b.lines)
+		}
+		if l, r := a.rankSum*len(b.lines), b.rankSum*len(a.lines); l != r {
+			return l < r // lower average rank
+		}
+		return shared[i] < shared[j]
+	})
+	for _, ip := range shared {
+		add(ip)
+	}
+	for rank := 0; len(pool.IPs) < size; rank++ {
+		more := false
+		for _, list := range lists {
+			if rank < len(list) {
+				more = true
+				add(list[rank].IP)
+			}
+		}
+		if !more {
+			break
+		}
+	}
+	pool.MedianMS = median(poolMedians)
+	switch {
+	case suspended:
+		pool.Reason = "管理员已暂停发布"
+	case len(lines) < minNationalLines:
+		pool.Reason = fmt.Sprintf("需要至少 %d 类线路的池已发布(当前 %d 类)", minNationalLines, len(lines))
+	case len(pool.IPs) < minConsensus:
+		pool.Reason = fmt.Sprintf("可选的 IP 不足 %d 个", minConsensus)
+	default:
+		pool.Published = true
+	}
+	return pool
 }
 
 // pushPools sends each operator's published pool to the DoH, both families in one request (the DoH
@@ -131,7 +250,7 @@ func aggregate(reports []Report, quorum, size int, suspended map[string]bool) ma
 // then expires on its own and clients fall back to the nationwide pool.
 func pushPools(ctx context.Context, client *http.Client, url, token string, ttl int, pools map[poolKey]*Pool) error {
 	var errs []error
-	for _, isp := range operators {
+	for _, isp := range append(slices.Clone(operators), nationalISP) {
 		v4, v6 := pools[poolKey{isp, 4}], pools[poolKey{isp, 6}]
 		body := map[string]any{"ttl": ttl, "source": "cfhub", "scope": "isp:" + isp, "ipv4": []string{}, "ipv6": []string{}}
 		any := false
@@ -183,7 +302,7 @@ func (h *Hub) runAggregation(ctx context.Context) {
 	cut := now.Add(-h.cfg.ReportTTL).Unix()
 	reports := day[:sort.Search(len(day), func(i int) bool { return day[i].At < cut })]
 	suspended := map[string]bool{}
-	for _, isp := range operators {
+	for _, isp := range append(slices.Clone(operators), nationalISP) {
 		suspended[isp] = h.store.Setting("suspended:"+isp) == "1"
 	}
 	pools := aggregate(reports, h.cfg.Quorum, h.cfg.PoolSize, suspended)
@@ -229,7 +348,7 @@ func (h *Hub) snapshot() ([]*Pool, int64) {
 		out = append(out, p)
 	}
 	rank := map[string]int{}
-	for i, isp := range append(slices.Clone(operators), "other") {
+	for i, isp := range append(append([]string{nationalISP}, operators...), "other") {
 		rank[isp] = i
 	}
 	sort.Slice(out, func(i, j int) bool {

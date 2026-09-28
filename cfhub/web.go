@@ -364,7 +364,7 @@ func (h *Hub) handleAdminISP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	isp, action := r.PathValue("isp"), r.PathValue("action")
-	if !slices.Contains(operators, isp) || (action != "suspend" && action != "resume") {
+	if (!slices.Contains(operators, isp) && isp != nationalISP) || (action != "suspend" && action != "resume") {
 		http.NotFound(w, r)
 		return
 	}
@@ -395,8 +395,8 @@ func (h *Hub) handleAPIHistory(w http.ResponseWriter, r *http.Request) {
 	allowCORS(w)
 	q := r.URL.Query()
 	isp := q.Get("isp")
-	if !slices.Contains(operators, isp) {
-		http.Error(w, "isp must be one of "+strings.Join(operators, ", "), http.StatusBadRequest)
+	if !slices.Contains(operators, isp) && isp != nationalISP {
+		http.Error(w, "isp must be one of "+strings.Join(operators, ", ")+", "+nationalISP, http.StatusBadRequest)
 		return
 	}
 	family := 4

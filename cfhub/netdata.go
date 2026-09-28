@@ -35,6 +35,7 @@ var operatorNames = map[string]string{
 	"cernet":   "教育网",
 	"cloud":    "国内云厂商",
 	"other":    "其他",
+	"national": "全国", // the nationwide pool (aggregate.go), not a line
 }
 
 // cloudProviders are the domestic clouds counted as "cloud", by the ASNs of their mainland regions
