@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // The report must use exactly the field names cfhub reads (work/cfhub reportRequest / ReportIP).
@@ -92,5 +94,49 @@ func TestHubAPIRoutesFallBackOnlyOnTransportFailure(t *testing.T) {
 	}
 	if got := apiBases(releaseManifest{}, "https://hub.example"); !reflect.DeepEqual(got, []string{"https://hub.example"}) {
 		t.Fatalf("without routes: %v, want the hub only", got)
+	}
+}
+
+// A report that reaches no route is retried after the backoff (a line's NAT can refuse new
+// connections for a while right after a run), and stops once any route answers.
+func TestHubReportRetriesUntilARouteAnswers(t *testing.T) {
+	saved := reportBackoff
+	reportBackoff = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { reportBackoff = saved })
+	var calls atomic.Int32
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) <= 2 { // the first two attempts: the connection dies without an answer
+			conn, _, _ := w.(http.Hijacker).Hijack()
+			conn.Close()
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(hub.Close)
+	status, _, err := sendHubReport([]string{hub.URL}, "cfp_test", []byte(`{}`))
+	if err != nil || status != http.StatusOK || calls.Load() != 3 {
+		t.Fatalf("status %d err %v after %d calls; want 200 on the third", status, err, calls.Load())
+	}
+
+	// Every attempt failing: 1 + len(reportBackoff) tries, then the error.
+	calls.Store(-100)
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		conn, _, _ := w.(http.Hijacker).Hijack()
+		conn.Close()
+	}))
+	t.Cleanup(dead.Close)
+	if _, _, err := sendHubReport([]string{dead.URL}, "cfp_test", []byte(`{}`)); err == nil || calls.Load() != -100+4 {
+		t.Fatalf("err %v after %d calls; want an error after 4 attempts", err, calls.Load()+100)
+	}
+	// Any HTTP answer is final, even a refusal: never retried.
+	calls.Store(0)
+	refuse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(refuse.Close)
+	if status, _, err := sendHubReport([]string{refuse.URL}, "cfp_test", []byte(`{}`)); err != nil || status != http.StatusTooManyRequests || calls.Load() != 1 {
+		t.Fatalf("status %d err %v after %d calls; want one 429", status, err, calls.Load())
 	}
 }

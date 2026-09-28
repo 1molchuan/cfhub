@@ -117,8 +117,27 @@ func hubReportBody(ranked []rankedIP, family int) []byte {
 	return body
 }
 
+// reportBackoff is the wait before each retry of a report that reached no route. Right after a run a
+// line can refuse new connections for a minute or two: its NAT (home router, or carrier-grade NAT)
+// is full of the run's hundreds of handshakes. 2026-09-28, Shanghai Mobile: candidates fetched before
+// the run went through, the report after it failed on both routes, retried 3 s apart, and nothing
+// reached the hub. At most about 7 minutes in all, so the IPv6 run still fits the unit's timeout.
+var reportBackoff = []time.Duration{20 * time.Second, time.Minute, 2 * time.Minute}
+
+// sendHubReport posts the report, retrying after reportBackoff while no route answers at all.
+func sendHubReport(apis []string, token string, body []byte) (int, string, error) {
+	for attempt := 0; ; attempt++ {
+		status, reply, err := postHubReport(apis, token, body)
+		if err == nil || attempt == len(reportBackoff) {
+			return status, reply, err
+		}
+		fmt.Fprintf(os.Stderr, "report reached no route (%v); retrying in %s\n", err, reportBackoff[attempt])
+		time.Sleep(reportBackoff[attempt])
+	}
+}
+
 // postHubReport sends the report; the status code is returned so the caller can tell a refusal
-// (bad token, too soon) from a transport failure on every route (err != nil, worth one retry).
+// (bad token, too soon) from a transport failure on every route (err != nil, worth a retry).
 func postHubReport(apis []string, token string, body []byte) (int, string, error) {
 	resp, err := callHubAPI(apis, http.MethodPost, "/api/v1/probe/report", token, body)
 	if err != nil {
@@ -181,20 +200,7 @@ func hubRun(doh, resolver, candidates, target string, rounds int, timeout time.D
 		fmt.Fprintf(os.Stderr, "only %d eligible IPs (< %d); not reporting\n", len(ranked), hubMinIPs)
 		os.Exit(3)
 	}
-	body := hubReportBody(ranked, ipFamily)
-	var (
-		status int
-		reply  string
-		err    error
-	)
-	// Each route once, then all of them again: a transport failure moves on, any HTTP answer is final.
-	for attempt := 1; attempt <= 2; attempt++ {
-		if status, reply, err = postHubReport(apis, token, body); err == nil {
-			break
-		}
-		fmt.Fprintln(os.Stderr, "report failed, retrying:", err)
-		time.Sleep(3 * time.Second)
-	}
+	status, reply, err := sendHubReport(apis, token, hubReportBody(ranked, ipFamily))
 	switch {
 	case err != nil:
 		fmt.Fprintln(os.Stderr, "report failed:", err)
