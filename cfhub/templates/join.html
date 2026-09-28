@@ -27,9 +27,12 @@
         <li>每小时由 cron 运行一次,日志用 <code>logread -e cfprobe</code> 查看;升级固件后保留(已写入 /etc/sysupgrade.conf)。</li>
         <li>路由器开了透明代理(OpenClash、PassWall 等)时,请让路由器自身的流量直连,否则测到的是代理线路。</li>
       </ul>
+      <h3>Docker(NAS 等)</h3>
+      <pre>docker run -d --name cfprobe --restart unless-stopped --network host -e CFHUB_TOKEN={{.NewToken}} -v cfprobe-data:/data ghcr.nju.edu.cn/1molchuan/cfprobe:latest</pre>
+      <p class="muted">支持 amd64、arm64 和 32 位 ARM。命令里用的是南京大学的 ghcr 镜像，大陆拉取快（实测阿里云上海 2 秒，直连 ghcr.io 要 2 分半）；境外机器把镜像换成 <code>ghcr.io/1molchuan/cfprobe:latest</code>。docker compose 写法见<a href="https://github.com/1molchuan/cfhub/blob/main/docker/compose.yaml">这里</a>。日志用 <code>docker logs cfprobe</code> 查看。</p>
       <h3>Windows(以管理员身份打开 PowerShell)</h3>
       <pre>&amp; ([scriptblock]::Create((irm {{.PublicURL}}/install.ps1))) -Token {{.NewToken}}</pre>
-      <p class="muted">卸载:Linux 运行 <code>curl -fsSL {{.PublicURL}}/install.sh | sudo bash -s -- --uninstall</code>;OpenWrt 运行 <code>wget -qO- {{.PublicURL}}/install.sh | sh -s -- --uninstall</code>;Windows 运行 <code>&amp; ([scriptblock]::Create((irm {{.PublicURL}}/install.ps1))) -Uninstall</code>。</p>
+      <p class="muted">卸载:Linux 运行 <code>curl -fsSL {{.PublicURL}}/install.sh | sudo bash -s -- --uninstall</code>;OpenWrt 运行 <code>wget -qO- {{.PublicURL}}/install.sh | sh -s -- --uninstall</code>;Docker 运行 <code>docker rm -f cfprobe &amp;&amp; docker volume rm cfprobe-data</code>;Windows 运行 <code>&amp; ([scriptblock]::Create((irm {{.PublicURL}}/install.ps1))) -Uninstall</code>。</p>
     </section>
   {{else if .TokenPrefix}}
     <section class="card">
