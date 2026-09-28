@@ -25,7 +25,7 @@ import (
 // prober's own state directory); the new one takes effect at the next run. -no-update turns it off.
 
 // releaseSeq is this build's release number. Bump it for every release, before building.
-const releaseSeq = 6
+const releaseSeq = 7
 
 // releasePublicKey verifies release manifests (base64, ed25519).
 const releasePublicKey = "pZvca84iii/7oUhLtAuvGls4U5dNbh64pCqhJnDTZps="

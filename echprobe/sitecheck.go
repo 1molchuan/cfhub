@@ -61,7 +61,7 @@ func fetchSite(ip, host string, ech []byte, paths []string, timeout time.Duratio
 	tr := &http.Transport{
 		ForceAttemptHTTP2: true,
 		DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			raw, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", siteAddr(ip))
+			raw, err := dialer(timeout).DialContext(ctx, "tcp", siteAddr(ip))
 			if err != nil {
 				return nil, err
 			}

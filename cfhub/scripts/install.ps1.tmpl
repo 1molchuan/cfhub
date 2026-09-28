@@ -1,10 +1,11 @@
 # cfhub volunteer prober installer (Windows). In an elevated PowerShell:
-#   Install:   & ([scriptblock]::Create((irm {{.PublicURL}}/install.ps1))) -Token <TOKEN> [-NoAutoUpdate]
+#   Install:   & ([scriptblock]::Create((irm {{.PublicURL}}/install.ps1))) -Token <TOKEN> [-NoAutoUpdate] [-Direct auto]
 #   Uninstall: & ([scriptblock]::Create((irm {{.PublicURL}}/install.ps1))) -Uninstall
 # Runs hourly as SYSTEM from %ProgramData%\cfprobe (readable only by SYSTEM and Administrators).
 # The prober installs newer releases itself, only if signed by the maintainer's offline key
-# (see selfupdate.go in the source); -NoAutoUpdate turns that off.
-param([string]$Token, [switch]$Uninstall, [switch]$NoAutoUpdate)
+# (see selfupdate.go in the source); -NoAutoUpdate turns that off. -Direct auto (or an interface
+# name) sends the prober's traffic through the physical network card, past a proxy's TUN adapter.
+param([string]$Token, [switch]$Uninstall, [switch]$NoAutoUpdate, [string]$Direct)
 $ErrorActionPreference = 'Stop'
 $Hub = '{{.PublicURL}}'
 $Dir = Join-Path $env:ProgramData 'cfprobe'
@@ -22,6 +23,8 @@ if ($Uninstall) {
 
 if ($Token -notmatch '^cfp_[A-Za-z0-9_-]{20,60}$') { throw "Usage: -Token <TOKEN>   (get a token at $Hub/join)" }
 if (-not [Environment]::Is64BitOperatingSystem) { throw 'Only 64-bit Windows is supported.' }
+# run.cmd is ASCII: an adapter name outside it (e.g. a localized "Ethernet") must go through "auto".
+if ($Direct -and $Direct -notmatch '^[A-Za-z0-9 ._()-]{1,64}$') { throw '-Direct takes "auto" or an ASCII adapter name.' }
 
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
 # SIDs, not names (group names are localized): S-1-5-18 = SYSTEM, S-1-5-32-544 = Administrators.
@@ -50,6 +53,7 @@ if (-not $ok) {
 Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue # a running cfprobe.exe cannot be replaced
 Move-Item -Force $tmp $exe
 $update = if ($NoAutoUpdate) { ' -no-update' } else { '' }
+if ($Direct) { $update += " -direct `"$Direct`"" }
 Set-Content -NoNewline -Encoding ascii -Path (Join-Path $Dir 'token') -Value $Token
 
 $run = Join-Path $Dir 'run.cmd'

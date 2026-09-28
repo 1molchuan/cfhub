@@ -1,9 +1,11 @@
 #!/bin/sh
 # cfhub volunteer prober installer: Linux with systemd, or OpenWrt (cron). POSIX sh, so it also runs
 # under OpenWrt's busybox ash.
-#   Linux:     curl -fsSL {{.PublicURL}}/install.sh | sudo sh -s -- <TOKEN> [--no-auto-update] [--dir DIR]
-#   OpenWrt:   wget -qO- {{.PublicURL}}/install.sh | sh -s -- <TOKEN> [--no-auto-update] [--dir DIR]
+#   Linux:     curl -fsSL {{.PublicURL}}/install.sh | sudo sh -s -- <TOKEN> [--no-auto-update] [--dir DIR] [--direct[=IF]]
+#   OpenWrt:   wget -qO- {{.PublicURL}}/install.sh | sh -s -- <TOKEN> [--no-auto-update] [--dir DIR] [--direct[=IF]]
 #   Uninstall: the same with --uninstall instead of the token
+# --direct: the prober's traffic leaves through the physical interface (or IF), past a local proxy's
+# TUN device, so the line measured is this machine's own and not the proxy's.
 # Missing tools (curl or wget, CA certificates, sha256sum, useradd) are installed first with the
 # system's package manager (apt-get, dnf, yum, zypper, pacman, opkg, apk). The prober runs hourly as an
 # unprivileged user and opens no ports. The binary must match the checksum below, and it lives in
@@ -24,11 +26,15 @@ have() { command -v "$1" >/dev/null 2>&1; }
 OPENWRT=""
 [ -f /etc/openwrt_release ] && OPENWRT=1
 
-TOKEN="" UPDATE="" UNINSTALL="" DIR=""
+TOKEN="" UPDATE="" UNINSTALL="" DIR="" DIRECT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --uninstall) UNINSTALL=1 ;;
     --no-auto-update) UPDATE=" -no-update" ;;
+    --direct) DIRECT=" -direct auto" ;;
+    --direct=*)
+      printf %s "${1#--direct=}" | grep -Eq "^[A-Za-z0-9._@-]{1,15}$" || die "--direct=<interface>: an interface name like eth0, or just --direct"
+      DIRECT=" -direct ${1#--direct=}" ;;
     --dir) [ $# -ge 2 ] || die "--dir needs a directory"; DIR=$2; shift ;;
     --dir=*) DIR=${1#--dir=} ;;
     cfp_*) TOKEN=$1 ;;
@@ -71,7 +77,7 @@ if [ -n "$UNINSTALL" ]; then
 fi
 
 printf '%s' "$TOKEN" | grep -Eq '^cfp_[A-Za-z0-9_-]{20,60}$' \
-  || die "usage: ... | sh -s -- <TOKEN> [--no-auto-update] [--dir DIR]   (get a token at $HUB/join)"
+  || die "usage: ... | sh -s -- <TOKEN> [--no-auto-update] [--dir DIR] [--direct[=IF]]   (get a token at $HUB/join)"
 [ -n "$OPENWRT" ] || have systemctl || die "systemd is required (or OpenWrt)"
 
 # --- Dependencies -------------------------------------------------------------------------------
@@ -265,9 +271,9 @@ T=""
 timeout 1 true >/dev/null 2>&1 && T="timeout 1200"
 export GOMEMLIMIT=48MiB
 {
-  \$T $BIN -hub $HUB -token-file $CONF/token -history $STATE/history4.json$UPDATE
+  \$T $BIN -hub $HUB -token-file $CONF/token -history $STATE/history4.json$UPDATE$DIRECT
   # IPv6 is optional: without it this run just fails.
-  \$T $BIN -hub $HUB -token-file $CONF/token -history $STATE/history6.json -family 6$UPDATE || true
+  \$T $BIN -hub $HUB -token-file $CONF/token -history $STATE/history6.json -family 6$UPDATE$DIRECT || true
 } 2>&1 | logger -t cfprobe
 EOF
   chmod 0755 "$CONF/run.sh"
@@ -307,9 +313,9 @@ After=network-online.target
 Type=oneshot
 User=cfprobe
 Group=cfprobe
-ExecStart=$BIN -hub $HUB -token-file $CONF/token -history $STATE/history4.json$UPDATE
+ExecStart=$BIN -hub $HUB -token-file $CONF/token -history $STATE/history4.json$UPDATE$DIRECT
 # IPv6 is optional: without it this run just fails and is ignored.
-ExecStart=-$BIN -hub $HUB -token-file $CONF/token -history $STATE/history6.json -family 6$UPDATE
+ExecStart=-$BIN -hub $HUB -token-file $CONF/token -history $STATE/history6.json -family 6$UPDATE$DIRECT
 TimeoutStartSec=20min
 Nice=10
 NoNewPrivileges=true

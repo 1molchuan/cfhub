@@ -114,6 +114,7 @@ func main() {
 	siteURLs := flag.String("sitecheck", "", "comma-separated URLs (e.g. https://linux.do/srv/status): fetch them through the general pool over ECH; report sites whose origin hangs, with IPs verified end to end")
 	siteReport := flag.String("site-report", "", "POST the -sitecheck result to this /admin/site URL (omit to print only)")
 	siteTTL := flag.Int("site-ttl", 2700, "seconds a -sitecheck override stays active server-side")
+	direct := flag.String("direct", "", `send every connection through this network interface (e.g. en0), or "auto" for the physical one: bypasses a local proxy's TUN device, which would otherwise measure the proxy's line (see direct.go)`)
 	flag.Parse()
 	if *hub != "" {
 		// Volunteer defaults: lighter than the core probers (a few MB per run), explicit flags still win.
@@ -175,6 +176,12 @@ func main() {
 	if *useQUIC {
 		handshake = handshakeQUIC
 	}
+	if *direct != "" {
+		if err := setupDirect(*direct, ipFamily); err != nil {
+			fmt.Fprintln(os.Stderr, "-direct:", err)
+			os.Exit(2)
+		}
+	}
 	if *dohIP != "" {
 		u, err := url.Parse(*doh)
 		if err != nil {
@@ -182,12 +189,12 @@ func main() {
 			os.Exit(2)
 		}
 		host := u.Hostname()
-		dialer := &net.Dialer{Timeout: 10 * time.Second}
+		d := dialer(10 * time.Second)
 		dohTransport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			if h, p, err := net.SplitHostPort(addr); err == nil && h == host {
 				addr = net.JoinHostPort(*dohIP, p)
 			}
-			return dialer.DialContext(ctx, network, addr)
+			return d.DialContext(ctx, network, addr)
 		}
 	}
 
@@ -356,7 +363,7 @@ func handshakeTCP(ip, sni string, ech []byte, timeout time.Duration) (a attempt)
 		cfg.EncryptedClientHelloConfigList = ech
 	}
 
-	raw, err := (&net.Dialer{Timeout: timeout}).Dial("tcp", net.JoinHostPort(ip, "443"))
+	raw, err := dialer(timeout).Dial("tcp", net.JoinHostPort(ip, "443"))
 	if err != nil {
 		a.Error = "tcp: " + err.Error()
 		return a

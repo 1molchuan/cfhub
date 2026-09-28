@@ -98,7 +98,7 @@ func metaCheck(doh, host string, timeout time.Duration, adminURL, token, source 
 
 // metaHandshake returns "accepted", "rejected" (with retry_configs), or "error".
 func metaHandshake(ip, sni string, ech []byte, timeout time.Duration) (string, []byte, error) {
-	raw, err := (&net.Dialer{Timeout: timeout}).Dial("tcp", net.JoinHostPort(ip, "443"))
+	raw, err := dialer(timeout).Dial("tcp", net.JoinHostPort(ip, "443"))
 	if err != nil {
 		return "error", nil, err
 	}

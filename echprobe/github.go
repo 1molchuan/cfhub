@@ -197,7 +197,7 @@ func appendUnique(dst []string, items ...string) []string {
 // request. good is true when the cert verifies for host and the server returns an HTTP status line.
 func githubCheck(ip, host string, timeout time.Duration) (good bool, ms int64, errStr string) {
 	start := time.Now()
-	raw, err := (&net.Dialer{Timeout: timeout}).Dial("tcp", net.JoinHostPort(ip, "443"))
+	raw, err := dialer(timeout).Dial("tcp", net.JoinHostPort(ip, "443"))
 	if err != nil {
 		return false, 0, "tcp: " + err.Error()
 	}

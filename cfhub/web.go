@@ -70,12 +70,14 @@ func fmtHours(hours int) string {
 
 // distFiles are the only files /dl serves, keyed by the checksum name the installers use.
 var distFiles = map[string]string{
-	"amd64":   "cfprobe-linux-amd64",
-	"arm64":   "cfprobe-linux-arm64",
-	"arm":     "cfprobe-linux-arm",    // 32-bit ARM (GOARM=5 runs on v5, v6 and v7)
-	"mips":    "cfprobe-linux-mips",   // big-endian MIPS routers (softfloat)
-	"mipsle":  "cfprobe-linux-mipsle", // little-endian MIPS routers, e.g. MT7621 (softfloat)
-	"windows": "cfprobe-windows-amd64.exe",
+	"amd64":        "cfprobe-linux-amd64",
+	"arm64":        "cfprobe-linux-arm64",
+	"arm":          "cfprobe-linux-arm",    // 32-bit ARM (GOARM=5 runs on v5, v6 and v7)
+	"mips":         "cfprobe-linux-mips",   // big-endian MIPS routers (softfloat)
+	"mipsle":       "cfprobe-linux-mipsle", // little-endian MIPS routers, e.g. MT7621 (softfloat)
+	"darwin-arm64": "cfprobe-darwin-arm64", // macOS (installed by hand; the prober updates itself)
+	"darwin-amd64": "cfprobe-darwin-amd64",
+	"windows":      "cfprobe-windows-amd64.exe",
 }
 
 func loadPages() map[string]*template.Template {

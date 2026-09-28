@@ -27,6 +27,21 @@
 
 不开放任何端口，不代理任何流量，不修改系统 DNS 或网络设置。卸载：`curl -fsSL https://cfhub.1molchuan.top/install.sh | sudo bash -s -- --uninstall`，会删除程序、配置、状态文件、systemd 单元和系统用户（OpenWrt 用 `wget -qO- ... | sh -s -- --uninstall`，同时删掉 cron 任务和 sysupgrade 条目）。
 
+### 开着代理的机器：直连选项（`echprobe/direct.go`）
+
+机器上开着 TUN 模式的代理（sing-box、Clash、WireGuard 等）时，探针的流量也会被代理接管，测到的是代理线路，结果会被归到"其他"。加上直连选项后，探针的所有连接都从物理网卡直接发出，包括测速握手、DoH 查询、上报和自动更新，绕开 TUN；域名通过同一张网卡向 223.5.5.5 查询，不用代理可能返回的假 IP。它用的是代理软件自己直连时用的套接字选项：macOS 用 `IP_BOUND_IF`，Linux 用 `SO_BINDTODEVICE`，Windows 用 `IP_UNICAST_IF`。不改系统和代理的任何设置。
+
+- Linux / OpenWrt：安装命令末尾加 `--direct`（自动选网卡）或 `--direct=eth0`。
+- Windows：加 `-Direct auto`。
+- Docker：加 `-e CFPROBE_DIRECT=auto`（需要 `--network host`）。
+- 直接运行：`cfprobe -direct auto ...` 或 `-direct en0`。
+
+自动选网卡的规则：已启用、有硬件地址、不是点对点隧道或虚拟网桥、有对应地址族公网地址的网卡里，系统顺序最靠前的那个。运行时第一行会打印选中的网卡。
+
+### macOS
+
+发布版里有 macOS 的程序（`cfprobe-darwin-arm64`、`cfprobe-darwin-amd64`），可以自动更新，但安装脚本还不支持 macOS，需要手动配置：程序放在 `~/Library/Application Support/cfprobe`，用 LaunchAgent（`StartInterval` 3600）每小时依次运行 IPv4 和 IPv6 两轮，不需要 sudo。
+
 ### Docker（`docker/`）
 
 适合 NAS 和已经在用 Docker 的机器。镜像支持 amd64、arm64、32 位 ARM，约 14MB：
@@ -102,7 +117,7 @@ docker run -d --name cfprobe --restart unless-stopped --network host \
 发布的程序可以从源码逐字节复现。用 Go 1.26.1，签出与发布版本号（`echprobe/selfupdate.go` 里的 `releaseSeq`）对应的提交，然后：
 
 ```bash
-./build.sh            # 在 dist/ 下编出六个平台的程序并打印 sha256
+./build.sh            # 在 dist/ 下编出八个平台的程序并打印 sha256
 ```
 
 `build.sh` 用的编译参数是 `CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags="-s -w"`。`-buildvcs=false` 不能省：在 git 仓库里编译时，Go 默认会把提交号写进程序，结果就对不上了。

@@ -7,6 +7,8 @@
 #                        (see echprobe/selfupdate.go) into /data; 0: keep this image's binary until
 #                        you pull a newer image
 #   CFPROBE_INTERVAL     seconds between runs, default 3600 (at least 1200)
+#   CFPROBE_DIRECT       "auto" or an interface name: bind the prober's traffic to the host's physical
+#                        interface, past a proxy's TUN device on the host (needs --network host)
 #   CFHUB_URL            another cfhub (self-hosted), default https://cfhub.1molchuan.top
 # The prober runs as nobody, opens no ports and keeps its state in /data.
 set -eu
@@ -24,6 +26,13 @@ esac
 export CFHUB_TOKEN
 interval=${CFPROBE_INTERVAL:-3600}
 [ "$interval" -ge 1200 ] 2>/dev/null || interval=3600
+DIRECT=""
+if [ -n "${CFPROBE_DIRECT:-}" ]; then
+  case "$CFPROBE_DIRECT" in
+    *[!A-Za-z0-9._@-]*) echo "cfprobe: CFPROBE_DIRECT takes \"auto\" or an interface name" >&2; exit 1 ;;
+  esac
+  DIRECT="-direct $CFPROBE_DIRECT"
+fi
 
 mkdir -p "$DATA"
 BIN=$IMAGE_BIN
@@ -58,8 +67,8 @@ fg() {
 
 echo "cfprobe: reporting to $HUB every $((interval / 60)) min$([ -n "$UPDATE" ] && echo ", auto-update off")"
 while :; do
-  fg $AS timeout 1200 "$BIN" -hub "$HUB" -history "$DATA/history4.json" $UPDATE || echo "cfprobe: IPv4 run failed (exit $?)"
+  fg $AS timeout 1200 "$BIN" -hub "$HUB" -history "$DATA/history4.json" $UPDATE $DIRECT || echo "cfprobe: IPv4 run failed (exit $?)"
   # IPv6 is optional (a Docker bridge network usually has none): without it this run just fails.
-  fg $AS timeout 1200 "$BIN" -hub "$HUB" -history "$DATA/history6.json" -family 6 $UPDATE || echo "cfprobe: IPv6 run failed or no IPv6 (exit $?)"
+  fg $AS timeout 1200 "$BIN" -hub "$HUB" -history "$DATA/history6.json" -family 6 $UPDATE $DIRECT || echo "cfprobe: IPv6 run failed or no IPv6 (exit $?)"
   fg sleep $((interval + RANDOM % 600))
 done

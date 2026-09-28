@@ -535,7 +535,7 @@ func TestInstallerCarriesChecksums(t *testing.T) {
 	}
 	// Every platform the installer can pick has its own checksum, and OpenWrt runs from cron.
 	for key, name := range distFiles {
-		if key == "windows" {
+		if key == "windows" || strings.HasPrefix(key, "darwin") { // install.ps1; macOS is set up by hand
 			continue
 		}
 		sum, _ := te.hub.distSum(name)
@@ -543,7 +543,7 @@ func TestInstallerCarriesChecksums(t *testing.T) {
 			t.Errorf("install.sh lacks the %s checksum", key)
 		}
 	}
-	for _, want := range []string{"/etc/openwrt_release", "DISTRIB_ARCH", "/etc/crontabs/cfprobe", "logger -t cfprobe", "opkg install", "apk add", "apt-get install", "ca-certificates", "--dir"} {
+	for _, want := range []string{"/etc/openwrt_release", "DISTRIB_ARCH", "/etc/crontabs/cfprobe", "logger -t cfprobe", "opkg install", "apk add", "apt-get install", "ca-certificates", "--dir", `--direct) DIRECT=" -direct auto"`, "history4.json$UPDATE$DIRECT"} {
 		if !strings.Contains(string(sh), want) {
 			t.Errorf("install.sh lacks %q", want)
 		}
