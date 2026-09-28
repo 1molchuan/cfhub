@@ -1,0 +1,19 @@
+# cfprobe with Docker Compose: put your token below (from https://cfhub.1molchuan.top/join), then
+#   docker compose up -d
+# Logs: docker compose logs -f
+services:
+  cfprobe:
+    image: ghcr.io/1molchuan/cfprobe:latest
+    # From mainland China, if ghcr.io is slow: ghcr.nju.edu.cn/1molchuan/cfprobe:latest
+    container_name: cfprobe
+    restart: unless-stopped
+    # The host's own network: the line being measured, and IPv6 if the host has it. No ports are opened.
+    network_mode: host
+    environment:
+      CFHUB_TOKEN: "cfp_your_token_here"
+      # CFPROBE_AUTO_UPDATE: "0"   # keep the image's binary until you pull a newer image
+    volumes:
+      - cfprobe-data:/data
+
+volumes:
+  cfprobe-data:

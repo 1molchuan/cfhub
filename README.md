@@ -27,6 +27,24 @@
 
 不开放任何端口，不代理任何流量，不修改系统 DNS 或网络设置。卸载：`curl -fsSL https://cfhub.1molchuan.top/install.sh | sudo bash -s -- --uninstall`，会删除程序、配置、状态文件、systemd 单元和系统用户（OpenWrt 用 `wget -qO- ... | sh -s -- --uninstall`，同时删掉 cron 任务和 sysupgrade 条目）。
 
+### Docker（`docker/`）
+
+适合 NAS 和已经在用 Docker 的机器。镜像支持 amd64、arm64、32 位 ARM，约 14MB：
+
+```bash
+docker run -d --name cfprobe --restart unless-stopped --network host \
+  -e CFHUB_TOKEN=<你的 token> -v cfprobe-data:/data ghcr.io/1molchuan/cfprobe:latest
+```
+
+或者用 [`docker/compose.yaml`](docker/compose.yaml)：填好 token，然后运行 `docker compose up -d`。大陆访问 ghcr.io 慢的话，把镜像地址换成南京大学的镜像站：`ghcr.nju.edu.cn/1molchuan/cfprobe:latest`。
+
+- 用 `--network host`，测的才是这台机器自己的线路；有 IPv6 时也会测 IPv6。容器不开放任何端口。
+- 每小时先测 IPv4，再测 IPv6，和 systemd、cron 的安装方式一样。探针以 nobody 用户运行，状态文件放在 `/data` 卷里。日志用 `docker logs cfprobe` 查看。
+- 自动更新默认开启：签名有效的新版本装进 `/data`，校验方式和其他安装方式相同；换了新镜像，就改用新镜像自带的程序。不想自动更新，加 `-e CFPROBE_AUTO_UPDATE=0`，之后要升级就拉新镜像。
+- token 也可以放在文件里，用 `CFHUB_TOKEN_FILE` 指定（例如 Docker secret），这样 `docker inspect` 看不到它。
+- 镜像由 GitHub Actions 从源码构建（[`.github/workflows/docker.yml`](.github/workflows/docker.yml)）。里面的程序用和 `build.sh` 相同的工具链和参数编译，与同一提交的签名发布版逐字节一致，构建日志里打印了每个程序的 sha256。
+- 自己构建：`docker build -f docker/Dockerfile -t cfprobe .`。在大陆构建可以加 `--build-arg GOPROXY=https://goproxy.cn,direct`，所有依赖仍按 go.sum 校验。
+
 ### 自动更新（`echprobe/selfupdate.go`）
 
 每次运行开始时，探针会下载 `manifest.json` 和它的签名 `manifest.json.sig`（约 500 字节），检查有没有新版本。同时满足下面三条才会更新：
