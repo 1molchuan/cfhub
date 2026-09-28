@@ -18,7 +18,7 @@ func TestPickInterfaceSkipsTunnelsAndBridges(t *testing.T) {
 		{Index: 2, Name: "utun4", Flags: net.FlagUp | net.FlagPointToPoint},          // sing-box TUN
 		{Index: 3, Name: "bridge100", Flags: up, HardwareAddr: mac},                  // VM bridge
 		{Index: 4, Name: "en5", Flags: up, HardwareAddr: mac},                        // no global address
-		{Index: 5, Name: "en0", Flags: up, HardwareAddr: mac},                        // the campus port
+		{Index: 5, Name: "en0", Flags: up, HardwareAddr: mac},                        // the wired port
 		{Index: 6, Name: "en1", Flags: up, HardwareAddr: mac},                        // Wi-Fi, later in order
 		{Index: 7, Name: "wg0", Flags: up | net.FlagPointToPoint, HardwareAddr: mac}, // WireGuard
 	}
@@ -27,8 +27,8 @@ func TestPickInterfaceSkipsTunnelsAndBridges(t *testing.T) {
 		"bridge100": {&net.IPNet{IP: net.ParseIP("192.168.64.1"), Mask: net.CIDRMask(24, 32)}},
 		"en5":       {&net.IPNet{IP: net.ParseIP("fe80::1"), Mask: net.CIDRMask(64, 128)}},
 		"en0": {
-			&net.IPNet{IP: net.ParseIP("111.186.1.20"), Mask: net.CIDRMask(24, 32)},
-			&net.IPNet{IP: net.ParseIP("2001:da8:8000:e195::4bef"), Mask: net.CIDRMask(64, 128)},
+			&net.IPNet{IP: net.ParseIP("198.51.100.20"), Mask: net.CIDRMask(24, 32)},
+			&net.IPNet{IP: net.ParseIP("2001:db8:8000:e195::4bef"), Mask: net.CIDRMask(64, 128)},
 		},
 		"en1": {&net.IPNet{IP: net.ParseIP("10.180.3.4"), Mask: net.CIDRMask(16, 32)}},
 	}
