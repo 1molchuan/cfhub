@@ -56,6 +56,16 @@ CREATE TABLE IF NOT EXISTS pool_history (
   median_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS pool_history_key ON pool_history(isp, family, at);
+-- Uptime per prober for the thanks list: hours in which it sent an IPv4 report. Kept after reports are
+-- pruned. IPv4 only, so a dual-stack machine (one v4 and one v6 prefix) counts once.
+CREATE TABLE IF NOT EXISTS prober_uptime (
+  user_id   INTEGER NOT NULL,
+  prefix    TEXT    NOT NULL,
+  first_at  INTEGER NOT NULL,
+  last_hour INTEGER NOT NULL,              -- unix time / 3600
+  hours     INTEGER NOT NULL,
+  PRIMARY KEY (user_id, prefix)
+);
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -105,7 +115,20 @@ func OpenStore(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	s := &Store{db: db}
+	// Uptime arrived after the first reports: count those once from the reports still kept.
+	if s.Setting("uptime_backfilled") != "1" {
+		if _, err := db.Exec(`INSERT OR IGNORE INTO prober_uptime (user_id, prefix, first_at, last_hour, hours)
+			SELECT user_id, prefix, MIN(at), MAX(at / 3600), COUNT(DISTINCT at / 3600) FROM reports WHERE family = 4 GROUP BY user_id, prefix`); err != nil {
+			db.Close()
+			return nil, err
+		}
+		if err := s.SetSetting("uptime_backfilled", "1"); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+	return s, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -240,7 +263,43 @@ func (s *Store) InsertReport(r Report) error {
 	}
 	_, err = s.db.Exec(`INSERT INTO reports (user_id, at, prefix, isp, family, ips, dropped, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.UserID, r.At, r.Prefix, r.ISP, r.Family, string(ips), r.Dropped, r.Version)
+	if err != nil || r.Family != 4 {
+		return err
+	}
+	// A new hour for this prober adds one hour of uptime.
+	_, err = s.db.Exec(`INSERT INTO prober_uptime (user_id, prefix, first_at, last_hour, hours) VALUES (?, ?, ?, ?, 1)
+		ON CONFLICT (user_id, prefix) DO UPDATE SET hours = hours + (excluded.last_hour > last_hour), last_hour = MAX(last_hour, excluded.last_hour)`,
+		r.UserID, r.Prefix, r.At, r.At/3600)
 	return err
+}
+
+// Leader is one line of the thanks list.
+type Leader struct {
+	Username string
+	Hours    int   // summed over the user's probers
+	Probers  int   // probers ever seen
+	Online   int   // probers that reported in the last two hours
+	Since    int64 // first report
+}
+
+// Leaders ranks users (not banned) by the uptime of all their probers.
+func (s *Store) Leaders(now int64, limit int) ([]Leader, error) {
+	rows, err := s.db.Query(`SELECT u.username, SUM(p.hours), COUNT(*), SUM(p.last_hour >= ?), MIN(p.first_at)
+		FROM prober_uptime p JOIN users u ON u.id = p.user_id WHERE u.banned = 0
+		GROUP BY p.user_id ORDER BY SUM(p.hours) DESC, MIN(p.first_at) LIMIT ?`, now/3600-2, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Leader
+	for rows.Next() {
+		var l Leader
+		if err := rows.Scan(&l.Username, &l.Hours, &l.Probers, &l.Online, &l.Since); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
 }
 
 // LastReportAt is when this prober (user + reporter prefix) last reported this family.

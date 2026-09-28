@@ -2,7 +2,10 @@ module cfhub
 
 go 1.26
 
-require modernc.org/sqlite v1.59.0
+require (
+	github.com/lionsoul2014/ip2region/binding/golang v0.0.0-20260901011515-c1a1fc7d5941
+	modernc.org/sqlite v1.59.0
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

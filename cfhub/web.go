@@ -33,6 +33,13 @@ var scriptFS embed.FS
 
 var cst = time.FixedZone("CST", 8*3600)
 
+// cssVersion goes into the stylesheet URL, so a deploy is not rendered with an hour-old cached app.css.
+var cssVersion = func() string {
+	raw, _ := staticFS.ReadFile("static/app.css")
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:4])
+}()
+
 var templateFuncs = template.FuncMap{
 	"fmtTime": func(ts int64) string { return time.Unix(ts, 0).In(cst).Format("01-02 15:04") },
 	"ispName": func(isp string) string {
@@ -44,6 +51,21 @@ var templateFuncs = template.FuncMap{
 		}
 		return isp
 	},
+	"fmtDate":    func(ts int64) string { return time.Unix(ts, 0).In(cst).Format("2006-01-02") },
+	"fmtHours":   fmtHours,
+	"ispSummary": ispSummary,
+	"inc":        func(i int) int { return i + 1 },
+}
+
+// fmtHours writes an uptime as "3 天 4 小时".
+func fmtHours(hours int) string {
+	switch {
+	case hours < 24:
+		return fmt.Sprintf("%d 小时", hours)
+	case hours%24 == 0:
+		return fmt.Sprintf("%d 天", hours/24)
+	}
+	return fmt.Sprintf("%d 天 %d 小时", hours/24, hours%24)
 }
 
 // distFiles are the only files /dl serves, keyed by the checksum name the installers use.
@@ -56,7 +78,11 @@ var distFiles = map[string]string{
 func loadPages() map[string]*template.Template {
 	pages := map[string]*template.Template{}
 	for _, name := range []string{"index", "join", "me", "admin", "message"} {
-		pages[name] = template.Must(template.New("").Funcs(templateFuncs).ParseFS(templateFS, "templates/layout.html", "templates/"+name+".html"))
+		files := []string{"templates/layout.html", "templates/" + name + ".html"}
+		if name == "index" {
+			files = append(files, "templates/map.html")
+		}
+		pages[name] = template.Must(template.New("").Funcs(templateFuncs).ParseFS(templateFS, files...))
 	}
 	return pages
 }
@@ -76,6 +102,7 @@ func (h *Hub) render(w http.ResponseWriter, r *http.Request, status int, page, t
 	data["PublicURL"] = strings.TrimRight(h.cfg.PublicURL, "/")
 	data["MinTrust"] = h.cfg.MinTrust
 	data["Quorum"] = h.cfg.Quorum
+	data["CSSVersion"] = cssVersion
 	var buf bytes.Buffer
 	if err := h.pages[page].ExecuteTemplate(&buf, "layout", data); err != nil {
 		log.Printf("render %s: %v", page, err)
@@ -127,7 +154,12 @@ func (h *Hub) handleIndex(w http.ResponseWriter, r *http.Request) {
 		}
 		cards = append(cards, card)
 	}
-	h.render(w, r, http.StatusOK, "index", "看板", map[string]any{"Pools": cards, "UpdatedAt": at})
+	regions, leaders := h.regionSnapshot()
+	h.render(w, r, http.StatusOK, "index", "看板", map[string]any{
+		"Pools": cards, "UpdatedAt": at,
+		"Map": buildMapView(regions), "Regions": regions, "RegionRows": regions.sorted(), "RegionReady": h.region.Ready(),
+		"Leaders": leaders, "Now": time.Now().Unix(),
+	})
 }
 
 // GET /join
@@ -519,6 +551,7 @@ func (h *Hub) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/pools", h.handleAPIPools)
 	mux.HandleFunc("GET /api/v1/history", h.handleAPIHistory)
 	mux.HandleFunc("GET /api/v1/summary", h.handleAPISummary)
+	mux.HandleFunc("GET /api/v1/regions", h.handleAPIRegions)
 	mux.HandleFunc("POST /api/v1/probe/report", h.handleReport)
 	mux.HandleFunc("GET /api/v1/probe/candidates", h.handleCandidates)
 	mux.HandleFunc("GET /internal/isp-table", h.handleISPTable)

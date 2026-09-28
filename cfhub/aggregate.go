@@ -174,18 +174,27 @@ func (h *Hub) runAggregation(ctx context.Context) {
 	h.aggMu.Lock()
 	defer h.aggMu.Unlock()
 	now := time.Now()
-	reports, err := h.store.ActiveReports(now.Add(-h.cfg.ReportTTL).Unix())
+	// One query for the longer window; reports come newest first, so the voting window is a prefix.
+	day, err := h.store.ActiveReports(now.Add(-max(h.cfg.ReportTTL, regionWindow)).Unix())
 	if err != nil {
 		log.Printf("aggregate: %v", err)
 		return
 	}
+	cut := now.Add(-h.cfg.ReportTTL).Unix()
+	reports := day[:sort.Search(len(day), func(i int) bool { return day[i].At < cut })]
 	suspended := map[string]bool{}
 	for _, isp := range operators {
 		suspended[isp] = h.store.Setting("suspended:"+isp) == "1"
 	}
 	pools := aggregate(reports, h.cfg.Quorum, h.cfg.PoolSize, suspended)
+	cut = now.Add(-regionWindow).Unix()
+	regions := regionStats(day[:sort.Search(len(day), func(i int) bool { return day[i].At < cut })], h.region.Province)
+	leaders, err := h.store.Leaders(now.Unix(), 50)
+	if err != nil {
+		log.Printf("leaders: %v", err)
+	}
 	h.mu.Lock()
-	h.pools, h.aggregatedAt = pools, now.Unix()
+	h.pools, h.regions, h.leaders, h.aggregatedAt = pools, regions, leaders, now.Unix()
 	h.mu.Unlock()
 
 	if h.cfg.HubToken != "" && h.cfg.DoHURL != "" {

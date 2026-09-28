@@ -48,6 +48,8 @@ type Config struct {
 	// DLMirrors are base URLs serving the same files as /dl (e.g. a CDN path in front of this host),
 	// tried by the installers before /dl itself. They need no trust: every file's sha256 is pinned.
 	DLMirrors []string
+	// RegionBase serves ip2region_v4.xdb (provinces for the volunteer map).
+	RegionBase string
 }
 
 func env(name, fallback string) string {
@@ -96,6 +98,7 @@ func loadConfig() (Config, error) {
 		AggregateEvery: envDuration("CFHUB_AGGREGATE_EVERY", 5*time.Minute),
 		ISPBase:        env("CFHUB_ISP_BASE", "https://raw.githubusercontent.com/gaoyifan/china-operator-ip/ip-lists"),
 		CFURLs:         strings.Split(env("CFHUB_CF_URLS", "https://www.cloudflare.com/ips-v4/,https://www.cloudflare.com/ips-v6/"), ","),
+		RegionBase:     env("CFHUB_IP2REGION_BASE", "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data"),
 	}
 	c.DistDir = env("CFHUB_DIST_DIR", filepath.Join(c.DataDir, "dist"))
 	for _, raw := range strings.Split(os.Getenv("CFHUB_DL_MIRRORS"), ",") {
@@ -121,6 +124,7 @@ type Hub struct {
 	cfg         Config
 	store       *Store
 	net         *netData
+	region      *regionDB
 	client      *http.Client // DoH push
 	oauthClient *http.Client
 	pages       map[string]*template.Template
@@ -128,6 +132,8 @@ type Hub struct {
 
 	mu           sync.RWMutex
 	pools        map[poolKey]*Pool
+	regions      RegionSnapshot
+	leaders      []Leader
 	aggregatedAt int64
 	aggMu        sync.Mutex // one aggregation at a time
 
@@ -138,6 +144,7 @@ type Hub struct {
 func newHub(cfg Config, store *Store, nd *netData) *Hub {
 	return &Hub{
 		cfg: cfg, store: store, net: nd,
+		region:      newRegionDB(cfg.DataDir, cfg.RegionBase),
 		client:      &http.Client{Timeout: 10 * time.Second},
 		oauthClient: &http.Client{Timeout: 15 * time.Second},
 		pages:       loadPages(),
@@ -186,6 +193,9 @@ func main() {
 	nd := newNetData(cfg.DataDir, cfg.ISPBase, cfg.CFURLs)
 	nd.Load()
 	hub := newHub(cfg, store, nd)
+	if err := hub.region.Load(); err != nil {
+		log.Printf("ip2region: %v", err)
+	}
 	if len(cfg.Admins) == 0 {
 		log.Print("warning: CFHUB_ADMINS is empty, nobody can open /admin")
 	}
@@ -201,6 +211,13 @@ func main() {
 		defer cancel()
 		if err := nd.Refresh(c); err != nil {
 			log.Printf("netdata refresh (keeping the previous copy): %v", err)
+		}
+	})
+	go every(ctx, 5*time.Second, 24*time.Hour, func(ctx context.Context) {
+		c, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+		if err := hub.region.Refresh(c); err != nil {
+			log.Printf("region refresh (keeping the previous copy): %v", err)
 		}
 	})
 	go every(ctx, 15*time.Second, cfg.AggregateEvery, hub.runAggregation)

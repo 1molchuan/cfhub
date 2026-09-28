@@ -68,7 +68,14 @@
 - 你的 linux.do 账号 id、用户名、显示名、信任等级。
 - 探针所在的 /24 网段（IPv6 为 /48）和线路类别。**不保存完整 IP。**
 - 测速结果，保留 7 天。
+- 每台探针（IPv4 网段）的累计在线小时数和首次上报时间，用于感谢榜；删掉测速结果后仍保留。
 - token 只存 sha256 哈希，丢了只能重新生成。
+
+### 看板上公开什么
+
+- 各类线路的池子、参与人数和台数。
+- 志愿者地图（`cfhub/region.go`）：近 24 小时内，中国大陆每个省级行政区有几个人、几台探针、各属哪类线路、最近上报时间。**只显示数量，不显示是谁在哪里。** 省份由探针的 IPv4 网段查 [ip2region](https://github.com/lionsoul2014/ip2region) 得到；港澳台和境外的探针不计入地图，只显示总台数。
+- 感谢榜：按探针累计在线时长排序（每台探针每有一个小时上报过结果记一小时，一个人的多台探针累加），显示 linux.do 用户名、累计时长、在线台数和加入日期，不显示位置。被封禁的账号不上榜。
 
 ## 自己核对程序
 
@@ -128,6 +135,7 @@ curl -s https://cfhub.1molchuan.top/dl/manifest.json
 - `GET /api/v1/pools`：各类线路当前的池、参与人数和台数、是否已发布。
 - `GET /api/v1/history?isp=chinanet&family=4&hours=48`：池子的变化历史。
 - `GET /api/v1/summary`：各类线路的活跃探针数。
+- `GET /api/v1/regions`：近 24 小时中国大陆各省的志愿者人数、探针台数和线路分布（只有数量）。
 
 ## 自己部署 cfhub
 
@@ -147,6 +155,7 @@ cd cfhub && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o cfhub .
 | `CFHUB_DATA_DIR` | 数据目录，默认 `/var/lib/cfhub`；探针程序放在其中的 `dist/` |
 | `CFHUB_DL_MIRRORS` | 可选，探针下载镜像，逗号分隔的 https 地址 |
 | `CFHUB_DOH_URL` / `HUB_TOKEN` | 可选，推送池子的 DoH 管理接口；`HUB_TOKEN` 为空时只计算不推送 |
+| `CFHUB_IP2REGION_BASE` | 可选，下载 `ip2region_v4.xdb`（约 11MB，每周更新，校验后才替换）的地址，默认 ip2region 仓库的 GitHub raw |
 
 cfhub 默认只监听 `127.0.0.1:8790`，前面需要一个反向代理。反向代理必须用真实的对端地址覆盖 `X-Real-IP`，并挡住 `/internal/*`：
 
@@ -168,3 +177,15 @@ cfhub.example.com {
 cd cfhub && go test ./...
 cd echprobe && go test ./...
 ```
+
+## 第三方数据
+
+- 地图底图：[DataV.GeoAtlas](https://datav.aliyun.com/portal/school/atlas/area_selector)（阿里云，数据来自高德），包括台湾、香港、澳门、藏南和南海诸岛（九段线）。`cfhub/cmd/mapgen` 把它投影、简化成 `cfhub/geo/china.json`：
+
+  ```bash
+  curl -o china.json https://geo.datav.aliyun.com/areas_v3/bound/100000_full.json
+  cd cfhub && go run ./cmd/mapgen -in ../china.json -out geo/china.json
+  ```
+
+- IP 定位：[ip2region](https://github.com/lionsoul2014/ip2region)（Apache-2.0），运行时下载数据文件，不随仓库分发。
+- 运营商网段：[gaoyifan/china-operator-ip](https://github.com/gaoyifan/china-operator-ip)；云厂商网段：RIPEstat。

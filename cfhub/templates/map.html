@@ -1,0 +1,42 @@
+{{define "volunteers"}}
+<h2 class="section">志愿者分布 <small>统计范围：中国大陆 · 近 24 小时</small></h2>
+<p class="muted">{{if .RegionReady}}{{.Regions.Users}} 位佬友的 {{.Regions.Probers}} 台探针，分布在 {{len .Regions.Provinces}} 个省级行政区。{{if .Regions.Elsewhere}}另有 {{.Regions.Elsewhere}} 台在中国大陆以外或位置未知，不计入地图。{{end}}{{else}}地区数据加载中，稍后刷新。{{end}}按探针所在网段定位，只统计数量，不显示是谁。鼠标移到省份上查看详情。</p>
+<div class="volunteers">
+  <figure class="map">
+    {{with .Map}}
+    <svg viewBox="0 0 {{.Width}} {{.Height}}" role="img" aria-label="中国志愿者探针分布图">
+      <defs><clipPath id="nanhai"><rect x="{{.InsetX}}" y="{{.InsetY}}" width="{{.InsetW}}" height="{{.InsetH}}"/></clipPath></defs>
+      {{range .Shapes}}<path class="{{.Class}}" d="{{.D}}"><title>{{.Tip}}</title></path>{{end}}
+      {{range .Shapes}}{{if .Label}}<text class="label" x="{{.X}}" y="{{.Y}}">{{.Label}}</text>{{end}}{{end}}
+      <rect class="frame" x="{{.InsetX}}" y="{{.InsetY}}" width="{{.InsetW}}" height="{{.InsetH}}"/>
+      <g clip-path="url(#nanhai)">
+        {{range .Inset}}<path class="{{.Class}}" d="{{.D}}"><title>{{.Tip}}</title></path>{{end}}
+        <path class="jd" d="{{.NineDash}}"/>
+      </g>
+      <text class="inset-label" x="{{.InsetX}}" y="{{.InsetY}}" dx="{{.InsetW}}" dy="{{.InsetH}}">南海诸岛</text>
+    </svg>
+    {{end}}
+    <figcaption class="legend">
+      <span><i class="sw lv0"></i>0 台</span><span><i class="sw lv1"></i>1</span><span><i class="sw lv2"></i>2–3</span><span><i class="sw lv3"></i>4–9</span><span><i class="sw lv4"></i>10+</span><span><i class="sw out"></i>不在统计范围</span>
+      <br>底图：DataV.GeoAtlas（阿里云，数据来自高德）· 定位：ip2region
+    </figcaption>
+  </figure>
+  <div class="regions">
+    {{if .RegionRows}}
+    <table>
+      <tr><th>省份</th><th>人</th><th>台</th><th>线路</th><th>最近上报</th></tr>
+      {{range .RegionRows}}<tr><td>{{.Name}}</td><td>{{.Users}}</td><td>{{.Probers}}</td><td>{{ispSummary .ISPs}}</td><td>{{fmtTime .LastAt}}</td></tr>{{end}}
+    </table>
+    {{else}}<p class="muted">还没有数据。<a href="/join">来点亮你所在的省份吧</a>。</p>{{end}}
+  </div>
+</div>
+
+<h2 class="section">感谢榜 <small>按探针累计在线时长</small></h2>
+<p class="muted">每台探针每有一个小时上报过结果，就记一小时，一个人的多台探针累加。</p>
+{{if .Leaders}}
+<table class="leaders">
+  <tr><th>#</th><th>佬友</th><th>累计在线</th><th>当前在线</th><th>加入于</th></tr>
+  {{range $i, $l := .Leaders}}<tr><td>{{inc $i}}</td><td><a href="https://linux.do/u/{{$l.Username}}" rel="noopener">{{$l.Username}}</a></td><td>{{fmtHours $l.Hours}}</td><td>{{$l.Online}} / {{$l.Probers}} 台</td><td>{{fmtDate $l.Since}}</td></tr>{{end}}
+</table>
+{{else}}<p class="muted">还没有人上榜。</p>{{end}}
+{{end}}
