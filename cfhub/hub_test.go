@@ -523,11 +523,29 @@ func TestInstallerCarriesChecksums(t *testing.T) {
 	if !strings.Contains(string(ps), `foreach ($src in @('https://mirror.example/cfprobe', 'https://cfhub.example/dl'))`) {
 		t.Fatalf("install.ps1 sources:\n%s", ps)
 	}
-	if bash, err := exec.LookPath("bash"); err == nil {
-		script := filepath.Join(t.TempDir(), "install.sh")
-		_ = os.WriteFile(script, sh, 0o644)
-		if out, err := exec.Command(bash, "-n", script).CombinedOutput(); err != nil {
-			t.Fatalf("rendered install.sh does not parse: %v\n%s", err, out)
+	script := filepath.Join(t.TempDir(), "install.sh")
+	_ = os.WriteFile(script, sh, 0o644)
+	// POSIX sh (OpenWrt's ash, Debian's dash) as well as bash. busybox/dash are checked when installed.
+	for _, shell := range [][]string{{"bash", "-n"}, {"bash", "--posix", "-n"}, {"dash", "-n"}, {"busybox", "sh", "-n"}} {
+		if path, err := exec.LookPath(shell[0]); err == nil {
+			if out, err := exec.Command(path, append(shell[1:], script)...).CombinedOutput(); err != nil {
+				t.Fatalf("rendered install.sh does not parse with %v: %v\n%s", shell, err, out)
+			}
+		}
+	}
+	// Every platform the installer can pick has its own checksum, and OpenWrt runs from cron.
+	for key, name := range distFiles {
+		if key == "windows" {
+			continue
+		}
+		sum, _ := te.hub.distSum(name)
+		if !strings.Contains(string(sh), key+") SHA="+sum) {
+			t.Errorf("install.sh lacks the %s checksum", key)
+		}
+	}
+	for _, want := range []string{"/etc/openwrt_release", "DISTRIB_ARCH", "/etc/crontabs/cfprobe", "logger -t cfprobe", "opkg install", "apk add", "apt-get install", "ca-certificates", "--dir"} {
+		if !strings.Contains(string(sh), want) {
+			t.Errorf("install.sh lacks %q", want)
 		}
 	}
 	// Self-update: the binary sits in the state dir, auto-update can be turned off, and the signed

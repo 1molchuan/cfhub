@@ -14,16 +14,18 @@
 
 安装脚本（`cfhub/scripts/install.sh.tmpl`、`install.ps1.tmpl`）做的事：
 
-1. 下载 `cfprobe`，核对 sha256，对不上就拒绝安装。先从镜像下载，失败再从 cfhub 本站下载。
-2. Linux：建一个无登录权限的系统用户 `cfprobe`；程序和状态文件放在 `/var/lib/cfprobe`（属于 cfprobe 用户）；token 存在 `/etc/cfprobe/token`（仅 root 和 cfprobe 组可读）；装一个每小时运行一次的 systemd timer，以 cfprobe 用户运行，除 `/var/lib/cfprobe` 外文件系统只读。Windows：文件放在 `%ProgramData%\cfprobe`，只有 SYSTEM 和管理员可读，并注册一个每小时运行的计划任务。
-3. 每次运行两条命令：
+1. 检查依赖：curl 或 wget、CA 证书、sha256sum，以及 Linux 上的 useradd。缺哪个就用系统的包管理器装哪个（apt-get、dnf、yum、zypper、pacman、opkg、apk），不装别的。
+2. 按平台选程序：x86_64、arm64、32 位 ARM（ARMv5 及以上）、MIPS 大端和小端（软浮点，适用于 MT7621、ath79 等路由器芯片）。下载 `cfprobe`，核对 sha256，对不上就拒绝安装。先从镜像下载，失败再从 cfhub 本站下载。
+3. Linux：建一个无登录权限的系统用户 `cfprobe`；程序和状态文件放在 `/var/lib/cfprobe`（属于 cfprobe 用户）；token 存在 `/etc/cfprobe/token`（仅 root 和 cfprobe 组可读）；装一个每小时运行一次的 systemd timer，以 cfprobe 用户运行，除 `/var/lib/cfprobe` 外文件系统只读。Windows：文件放在 `%ProgramData%\cfprobe`，只有 SYSTEM 和管理员可读，并注册一个每小时运行的计划任务。
+   OpenWrt（`wget -qO- https://cfhub.1molchuan.top/install.sh | sh -s -- <token>`）：同样建 `cfprobe` 用户；程序放在闪存上的 `/usr/lib/cfprobe`（OpenWrt 的 `/var` 在内存里），可以用 `--dir` 放到 U 盘；由 cron 以 cfprobe 用户每小时运行一次，输出进系统日志（`logread -e cfprobe`），并把程序和配置写进 `/etc/sysupgrade.conf`，升级固件后保留。
+4. 每次运行两条命令：
 
 ```
 /var/lib/cfprobe/cfprobe -hub https://cfhub.1molchuan.top -token-file /etc/cfprobe/token -history /var/lib/cfprobe/history4.json
 /var/lib/cfprobe/cfprobe -hub https://cfhub.1molchuan.top -token-file /etc/cfprobe/token -history /var/lib/cfprobe/history6.json -family 6
 ```
 
-不开放任何端口，不代理任何流量，不修改系统 DNS 或网络设置。卸载：`curl -fsSL https://cfhub.1molchuan.top/install.sh | sudo bash -s -- --uninstall`，会删除程序、配置、状态文件、systemd 单元和系统用户。
+不开放任何端口，不代理任何流量，不修改系统 DNS 或网络设置。卸载：`curl -fsSL https://cfhub.1molchuan.top/install.sh | sudo bash -s -- --uninstall`，会删除程序、配置、状态文件、systemd 单元和系统用户（OpenWrt 用 `wget -qO- ... | sh -s -- --uninstall`，同时删掉 cron 任务和 sysupgrade 条目）。
 
 ### 自动更新（`echprobe/selfupdate.go`）
 
@@ -82,7 +84,7 @@
 发布的程序可以从源码逐字节复现。用 Go 1.26.1，签出与发布版本号（`echprobe/selfupdate.go` 里的 `releaseSeq`）对应的提交，然后：
 
 ```bash
-./build.sh            # 在 dist/ 下编出三个平台的程序并打印 sha256
+./build.sh            # 在 dist/ 下编出六个平台的程序并打印 sha256
 ```
 
 `build.sh` 用的编译参数是 `CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags="-s -w"`。`-buildvcs=false` 不能省：在 git 仓库里编译时，Go 默认会把提交号写进程序，结果就对不上了。

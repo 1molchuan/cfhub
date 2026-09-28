@@ -1,74 +1,301 @@
-#!/usr/bin/env bash
-# cfhub volunteer prober installer (Linux, systemd).
-#   Install:   curl -fsSL {{.PublicURL}}/install.sh | sudo bash -s -- <TOKEN> [--no-auto-update]
-#   Uninstall: curl -fsSL {{.PublicURL}}/install.sh | sudo bash -s -- --uninstall
-# Runs hourly as an unprivileged system user; opens no ports; the binary is checksum-verified.
-# The binary lives in the prober's own state directory so it can install newer releases itself;
-# it only accepts releases signed by the maintainer's offline key (see selfupdate.go in the source).
-set -euo pipefail
+#!/bin/sh
+# cfhub volunteer prober installer: Linux with systemd, or OpenWrt (cron). POSIX sh, so it also runs
+# under OpenWrt's busybox ash.
+#   Linux:     curl -fsSL {{.PublicURL}}/install.sh | sudo sh -s -- <TOKEN> [--no-auto-update] [--dir DIR]
+#   OpenWrt:   wget -qO- {{.PublicURL}}/install.sh | sh -s -- <TOKEN> [--no-auto-update] [--dir DIR]
+#   Uninstall: the same with --uninstall instead of the token
+# Missing tools (curl or wget, CA certificates, sha256sum, useradd) are installed first with the
+# system's package manager (apt-get, dnf, yum, zypper, pacman, opkg, apk). The prober runs hourly as an
+# unprivileged user and opens no ports. The binary must match the checksum below, and it lives in
+# the prober's own directory so it can install newer releases itself; it only accepts releases signed
+# by the maintainer's offline key (see selfupdate.go in the source).
+set -eu
 HUB="{{.PublicURL}}"
-STATE=/var/lib/cfprobe
-BIN=$STATE/cfprobe
-LEGACY_BIN=/usr/local/bin/cfprobe
 CONF=/etc/cfprobe
+LEGACY_BIN=/usr/local/bin/cfprobe
 UNIT=/etc/systemd/system/cfprobe.service
 TIMER=/etc/systemd/system/cfprobe.timer
+CRONTAB=/etc/crontabs/cfprobe
 die() { echo "cfprobe: $*" >&2; exit 1; }
+say() { echo "cfprobe: $*"; }
+have() { command -v "$1" >/dev/null 2>&1; }
 
 [ "$(id -u)" = 0 ] || die "please run as root (sudo)"
-command -v systemctl >/dev/null || die "systemd is required"
+OPENWRT=""
+[ -f /etc/openwrt_release ] && OPENWRT=1
 
-if [ "${1:-}" = "--uninstall" ]; then
-  systemctl disable --now cfprobe.timer 2>/dev/null || true
-  systemctl stop cfprobe.service 2>/dev/null || true
-  rm -f "$UNIT" "$TIMER" "$LEGACY_BIN"
+TOKEN="" UPDATE="" UNINSTALL="" DIR=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --uninstall) UNINSTALL=1 ;;
+    --no-auto-update) UPDATE=" -no-update" ;;
+    --dir) [ $# -ge 2 ] || die "--dir needs a directory"; DIR=$2; shift ;;
+    --dir=*) DIR=${1#--dir=} ;;
+    cfp_*) TOKEN=$1 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+  shift
+done
+
+# Where the binary and its history live. OpenWrt's /var is RAM, so it gets a flash directory there.
+STATE=/var/lib/cfprobe
+[ -n "$OPENWRT" ] && STATE=/usr/lib/cfprobe
+[ -f "$CONF/dir" ] && STATE=$(cat "$CONF/dir")
+[ -n "$DIR" ] && STATE=${DIR%/}
+case "$STATE" in /?*) ;; *) die "--dir must be an absolute path" ;; esac
+BIN=$STATE/cfprobe
+
+remove_openwrt_user() {
+  for f in /etc/passwd /etc/group /etc/shadow; do
+    [ -f "$f" ] && sed -i '/^cfprobe:/d' "$f"
+  done
+  return 0
+}
+
+if [ -n "$UNINSTALL" ]; then
+  if [ -n "$OPENWRT" ]; then
+    rm -f "$CRONTAB"
+    [ -x /etc/init.d/cron ] && /etc/init.d/cron restart >/dev/null 2>&1 || true
+    [ -f /etc/sysupgrade.conf ] && sed -i '/# cfprobe$/d' /etc/sysupgrade.conf
+    remove_openwrt_user
+  else
+    systemctl disable --now cfprobe.timer 2>/dev/null || true
+    systemctl stop cfprobe.service 2>/dev/null || true
+    rm -f "$UNIT" "$TIMER" "$LEGACY_BIN"
+    systemctl daemon-reload 2>/dev/null || true
+    if id cfprobe >/dev/null 2>&1; then userdel cfprobe || true; fi
+  fi
   rm -rf "$CONF" "$STATE"
-  systemctl daemon-reload
-  if id cfprobe >/dev/null 2>&1; then userdel cfprobe || true; fi
   echo "cfprobe removed."
   exit 0
 fi
 
-TOKEN="${1:-}"
-[[ "$TOKEN" =~ ^cfp_[A-Za-z0-9_-]{20,60}$ ]] || die "usage: curl -fsSL $HUB/install.sh | sudo bash -s -- <TOKEN> [--no-auto-update]   (get a token at $HUB/join)"
-UPDATE=""
-case "${2:-}" in
-  "") ;;
-  --no-auto-update) UPDATE=" -no-update" ;;
-  *) die "unknown option ${2}" ;;
+printf '%s' "$TOKEN" | grep -Eq '^cfp_[A-Za-z0-9_-]{20,60}$' \
+  || die "usage: ... | sh -s -- <TOKEN> [--no-auto-update] [--dir DIR]   (get a token at $HUB/join)"
+[ -n "$OPENWRT" ] || have systemctl || die "systemd is required (or OpenWrt)"
+
+# --- Dependencies -------------------------------------------------------------------------------
+
+PM=""
+# opkg: OpenWrt up to 24.10; apk: OpenWrt 25 and later.
+for p in apt-get dnf yum zypper pacman opkg apk; do
+  if have "$p"; then PM=$p; break; fi
+done
+
+# pkg_name <tool> prints the package that provides it under this package manager.
+pkg_name() {
+  case "$1:$PM${OPENWRT:+:openwrt}" in
+    ca:opkg*|ca:apk:openwrt) echo ca-bundle ;;
+    ca:*) echo ca-certificates ;;
+    sha256sum:opkg*|sha256sum:apk:openwrt) echo coreutils-sha256sum ;;
+    sha256sum:*) echo coreutils ;;
+    useradd:apt-get) echo passwd ;;
+    useradd:dnf|useradd:yum) echo shadow-utils ;;
+    useradd:*) echo shadow ;;
+    *) echo "$1" ;;
+  esac
+}
+
+# The same files and directories Go's crypto/x509 reads the system roots from.
+has_ca() {
+  for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/ca-bundle.pem \
+    /etc/pki/tls/cacert.pem /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem /etc/ssl/cert.pem; do
+    [ -s "$f" ] && return 0
+  done
+  for d in /etc/ssl/certs /etc/pki/tls/certs; do
+    [ -d "$d" ] && [ -n "$(ls "$d" 2>/dev/null | grep -E '\.(pem|crt)$' | head -n 1)" ] && return 0
+  done
+  return 1
+}
+
+missing() {
+  m=""
+  have curl || have wget || m="$m curl"
+  have sha256sum || m="$m sha256sum"
+  has_ca || m="$m ca"
+  [ -n "$OPENWRT" ] || have useradd || m="$m useradd"
+  echo "$m"
+}
+
+need=$(missing)
+if [ -n "$need" ]; then
+  [ -n "$PM" ] || die "missing:$need, and no supported package manager was found; please install them yourself"
+  pkgs=""
+  for tool in $need; do pkgs="$pkgs $(pkg_name "$tool")"; done
+  say "installing missing dependencies:$pkgs (via $PM)"
+  case $PM in
+    apt-get) DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $pkgs >/dev/null ;;
+    dnf|yum) $PM install -y -q $pkgs ;;
+    zypper) zypper -n -q install $pkgs ;;
+    pacman) pacman -Sy --noconfirm --needed $pkgs >/dev/null ;;
+    opkg) opkg update >/dev/null && opkg install $pkgs ;;
+    apk) apk update >/dev/null && apk add $pkgs ;;
+  esac || {
+    # Without CA certificates, OpenWrt cannot reach its own https package feeds either. Packages are
+    # signature-checked, so fetching them over http is safe; the feed file is the user's to change.
+    [ "$PM" = opkg ] && echo "cfprobe: if the package feeds are unreachable over https, run: sed -i 's#https://#http://#' /etc/opkg/distfeeds.conf" >&2
+    die "installing$pkgs failed; please install them yourself and run this again"
+  }
+  need=$(missing)
+  [ -z "$need" ] || die "still missing after installing:$need"
+fi
+
+fetch() {
+  if have curl; then
+    curl -fsSL --retry 2 --connect-timeout 15 --max-time 600 -o "$2" "$1"
+  else
+    wget -q -T 30 -O "$2" "$1"
+  fi
+}
+
+# --- Platform -----------------------------------------------------------------------------------
+
+ARCH=""
+if [ -n "$OPENWRT" ]; then
+  . /etc/openwrt_release
+  case "${DISTRIB_ARCH:-}" in
+    x86_64) ARCH=amd64 ;;
+    aarch64*) ARCH=arm64 ;;
+    arm_*) ARCH=arm ;;
+    mipsel_*) ARCH=mipsle ;;
+    mips_*) ARCH=mips ;;
+  esac
+fi
+if [ -z "$ARCH" ]; then
+  case "$(uname -m)" in
+    x86_64|amd64) ARCH=amd64 ;;
+    aarch64|arm64) ARCH=arm64 ;;
+    armv5*|armv6*|armv7*|armv8l|arm) ARCH=arm ;;
+    mipsel|mipsle) ARCH=mipsle ;;
+    mips)
+      # uname says "mips" either way; the ELF header of a system binary tells the byte order.
+      case "$(od -An -tx1 -j5 -N1 /bin/sh 2>/dev/null | tr -d ' ')" in
+        01) ARCH=mipsle ;;
+        02) ARCH=mips ;;
+      esac ;;
+  esac
+fi
+case $ARCH in
+  amd64) SHA={{.SHA.amd64}} ;;
+  arm64) SHA={{.SHA.arm64}} ;;
+  arm) SHA={{.SHA.arm}} ;;
+  mips) SHA={{.SHA.mips}} ;;
+  mipsle) SHA={{.SHA.mipsle}} ;;
+  *) die "unsupported platform $(uname -m)${DISTRIB_ARCH:+ ($DISTRIB_ARCH)}: amd64, arm64, 32-bit arm, mips and mipsel only" ;;
 esac
 
-case "$(uname -m)" in
-  x86_64|amd64)  ARCH=amd64; SHA={{.SHA.amd64}} ;;
-  aarch64|arm64) ARCH=arm64; SHA={{.SHA.arm64}} ;;
-  *) die "unsupported architecture $(uname -m) (amd64 and arm64 only)" ;;
-esac
+mem=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo 2>/dev/null || echo 0)
+if [ "${mem:-0}" -gt 0 ] && [ "$mem" -lt 120000 ]; then
+  say "warning: only $((mem / 1024)) MB of memory; a run needs about 30 MB"
+fi
 
-TMP=$(mktemp)
+# --- Download -----------------------------------------------------------------------------------
+
+TMP=$(mktemp 2>/dev/null || echo "/tmp/cfprobe.$$")
 trap 'rm -f "$TMP"' EXIT
 # Mirrors first (a CDN is far faster from mainland lines), then the hub itself. Any source will do:
 # the binary must match the checksum above.
 OK=""
 for SRC in {{range .Sources}}"{{.}}" {{end}}; do
-  if curl -fsSL --retry 2 --connect-timeout 15 --max-time 600 -o "$TMP" "$SRC/cfprobe-linux-$ARCH" \
-    && echo "$SHA  $TMP" | sha256sum -c --quiet - 2>/dev/null; then
+  if fetch "$SRC/cfprobe-linux-$ARCH" "$TMP" && [ "$(sha256sum "$TMP" | cut -d' ' -f1)" = "$SHA" ]; then
     OK=1
     break
   fi
-  echo "cfprobe: $SRC failed or did not match the checksum, trying the next source" >&2
+  say "$SRC failed or did not match the checksum, trying the next source"
 done
-[ -n "$OK" ] || die "no source gave a binary matching the checksum, refusing to install"
+if [ -z "$OK" ]; then
+  [ -n "$OPENWRT" ] && ! have curl && say "hint: HTTPS downloads need 'opkg update && opkg install libustream-mbedtls ca-bundle'"
+  die "no source gave a binary matching the checksum, refusing to install"
+fi
 
-id cfprobe >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin cfprobe
-systemctl stop cfprobe.service 2>/dev/null || true
-install -d -m 0750 -o cfprobe -g cfprobe "$STATE"
-install -m 0755 -o cfprobe -g cfprobe "$TMP" "$BIN"
+# Room for the binary; a self-update also writes the new release next to it before swapping, and
+# without room for that it just fails and the prober keeps its current version.
+parent=$STATE
+while [ ! -d "$parent" ]; do parent=$(dirname "$parent"); done
+size=$(( ($(wc -c < "$TMP") + 1023) / 1024 ))
+old=0
+[ -f "$BIN" ] && old=$(( ($(wc -c < "$BIN") + 1023) / 1024 ))
+avail=$(df -Pk "$parent" 2>/dev/null | awk 'NR == 2 { print $4 }')
+if [ -n "$avail" ]; then
+  free=$((avail + old))
+  [ "$free" -ge $((size + 1024)) ] \
+    || die "$parent has $((avail / 1024)) MB free, $(( (size + 1024) / 1024 )) MB needed; choose another place with --dir (e.g. a USB disk)"
+  [ "$free" -ge $((size * 2 + 1024)) ] \
+    || say "warning: $parent has room for one copy only; automatic updates will fail until more space is free (reinstall to update)"
+fi
+
+# --- Install ------------------------------------------------------------------------------------
+
+if ! id cfprobe >/dev/null 2>&1; then
+  if [ -n "$OPENWRT" ]; then
+    id=200
+    while grep -q "^[^:]*:[^:]*:$id:" /etc/passwd /etc/group; do id=$((id + 1)); done
+    echo "cfprobe:x:$id:" >> /etc/group
+    echo "cfprobe:x:$id:$id:cfprobe:$STATE:/bin/false" >> /etc/passwd
+    [ -f /etc/shadow ] && echo "cfprobe:*:0:0:99999:7:::" >> /etc/shadow
+  else
+    useradd --system --no-create-home --shell "$(command -v nologin || echo /bin/false)" cfprobe
+  fi
+fi
+
+[ -n "$OPENWRT" ] || systemctl stop cfprobe.service 2>/dev/null || true
+mkdir -p "$STATE" "$CONF"
+chown cfprobe:cfprobe "$STATE"
+chmod 0750 "$STATE"
+cp "$TMP" "$STATE/.cfprobe.new"
+chown cfprobe:cfprobe "$STATE/.cfprobe.new"
+chmod 0755 "$STATE/.cfprobe.new"
+mv -f "$STATE/.cfprobe.new" "$BIN"
 rm -f "$LEGACY_BIN" # installs before self-update kept the binary here
-install -d -m 0750 -o root -g cfprobe "$CONF"
-umask 077
-printf '%s' "$TOKEN" > "$CONF/token"
+chown root:cfprobe "$CONF"
+chmod 0750 "$CONF"
+(umask 077; printf '%s' "$TOKEN" > "$CONF/token")
 chown root:cfprobe "$CONF/token"
 chmod 0640 "$CONF/token"
+printf '%s\n' "$STATE" > "$CONF/dir"
+
+if [ -n "$OPENWRT" ]; then
+  # Hourly from cron as the cfprobe user, output to the system log. A lock keeps a slow run from
+  # overlapping the next; GOMEMLIMIT keeps the Go runtime modest on small routers.
+  cat > "$CONF/run.sh" <<EOF
+#!/bin/sh
+exec 9>$STATE/.lock
+if command -v flock >/dev/null 2>&1; then flock -n 9 || exit 0; fi
+T=""
+timeout 1 true >/dev/null 2>&1 && T="timeout 1200"
+export GOMEMLIMIT=48MiB
+{
+  \$T $BIN -hub $HUB -token-file $CONF/token -history $STATE/history4.json$UPDATE
+  # IPv6 is optional: without it this run just fails.
+  \$T $BIN -hub $HUB -token-file $CONF/token -history $STATE/history6.json -family 6$UPDATE || true
+} 2>&1 | logger -t cfprobe
+EOF
+  chmod 0755 "$CONF/run.sh"
+  mkdir -p /etc/crontabs
+  minute=$(awk 'BEGIN { srand(); print int(rand() * 60) }')
+  echo "$minute * * * * $CONF/run.sh" > "$CRONTAB"
+  chmod 0600 "$CRONTAB"
+  # Keep the prober across firmware upgrades (sysupgrade keeps what is listed here).
+  if [ -f /etc/sysupgrade.conf ]; then
+    sed -i '/# cfprobe$/d' /etc/sysupgrade.conf
+    printf '%s # cfprobe\n' "$CONF/" "$CRONTAB" "$STATE/" >> /etc/sysupgrade.conf
+  fi
+  if [ -x /etc/init.d/cron ]; then
+    /etc/init.d/cron enable >/dev/null 2>&1 || true
+    /etc/init.d/cron restart >/dev/null 2>&1 || say "warning: could not restart cron; reboot or run /etc/init.d/cron restart"
+  else
+    say "warning: no /etc/init.d/cron; the hourly runs need busybox crond"
+  fi
+  if have start-stop-daemon; then
+    start-stop-daemon -S -b -c cfprobe -x "$CONF/run.sh" >/dev/null 2>&1 || true
+    first="within a few minutes"
+  else
+    first="at minute $minute of the hour"
+  fi
+  echo "cfprobe installed in $STATE$([ -n "$UPDATE" ] && echo " (auto-update off)"). The first report shows up $first at $HUB/me"
+  echo "Logs: logread -e cfprobe"
+  exit 0
+fi
 
 cat > "$UNIT" <<EOF
 [Unit]

@@ -25,7 +25,10 @@ import (
 	"strings"
 )
 
-var binaries = []string{"cfprobe-linux-amd64", "cfprobe-linux-arm64", "cfprobe-windows-amd64.exe"}
+var binaries = []string{
+	"cfprobe-linux-amd64", "cfprobe-linux-arm64", "cfprobe-linux-arm", "cfprobe-linux-mips", "cfprobe-linux-mipsle",
+	"cfprobe-windows-amd64.exe",
+}
 
 type manifest struct {
 	Seq     int               `json:"seq"`

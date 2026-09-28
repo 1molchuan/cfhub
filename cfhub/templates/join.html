@@ -2,7 +2,7 @@
 <h1>加入:在你的线路上跑一个探针</h1>
 <p>探针每小时用 ECH 实测一批 Cloudflare IP(和浏览器访问 Cloudflare 站点的方式相同),把结果上报到这里。同一运营商有足够多的探针后,edge DoH 就会给这个运营商的用户返回更适合他们的优选 IP。</p>
 <ul class="muted">
-  <li>只需要一台能长期开机的 Linux(x86 / ARM)或 Windows 电脑,<b>家庭宽带最有价值</b>。云服务器也欢迎:阿里云、腾讯云、华为云等国内云厂商的机器单独汇成"国内云厂商"池,境外机器只展示不分池。</li>
+  <li>只需要一台能长期开机的 Linux(x86 / ARM)、Windows 电脑或 OpenWrt 路由器,<b>家庭宽带最有价值</b>。云服务器也欢迎:阿里云、腾讯云、华为云等国内云厂商的机器单独汇成"国内云厂商"池,境外机器只展示不分池。</li>
   <li>同一个 token 可以装在多台机器上,每台(不同网段)各算一票;一个池里每人最多算 5 台,且每个 IP 必须有 2 人以上认可。</li>
   <li>每次运行消耗几 MB 流量;不开放任何端口,不代理任何流量。</li>
   <li>这里只记录你线路所在的 /24 网段和运营商,不保存你的完整 IP。</li>
@@ -19,9 +19,17 @@
       <p><code class="token">{{.NewToken}}</code></p>
       <h3>Linux(root 运行)</h3>
       <pre>curl -fsSL {{.PublicURL}}/install.sh | sudo bash -s -- {{.NewToken}}</pre>
+      <p class="muted">缺少的依赖(curl、CA 证书等)会自动用系统的包管理器安装。</p>
+      <h3>OpenWrt 路由器(SSH 登录后运行)</h3>
+      <pre>wget -qO- {{.PublicURL}}/install.sh | sh -s -- {{.NewToken}}</pre>
+      <ul class="muted">
+        <li>支持 x86_64、ARM(32 / 64 位)和 MIPS(如 MT7621、ath79)。需要约 10MB 空闲空间;不够的话在命令末尾加 <code>--dir /mnt/sda1/cfprobe</code> 装到 U 盘。</li>
+        <li>每小时由 cron 运行一次,日志用 <code>logread -e cfprobe</code> 查看;升级固件后保留(已写入 /etc/sysupgrade.conf)。</li>
+        <li>路由器开了透明代理(OpenClash、PassWall 等)时,请让路由器自身的流量直连,否则测到的是代理线路。</li>
+      </ul>
       <h3>Windows(以管理员身份打开 PowerShell)</h3>
       <pre>&amp; ([scriptblock]::Create((irm {{.PublicURL}}/install.ps1))) -Token {{.NewToken}}</pre>
-      <p class="muted">卸载:Linux 运行 <code>curl -fsSL {{.PublicURL}}/install.sh | sudo bash -s -- --uninstall</code>;Windows 运行 <code>&amp; ([scriptblock]::Create((irm {{.PublicURL}}/install.ps1))) -Uninstall</code>。</p>
+      <p class="muted">卸载:Linux 运行 <code>curl -fsSL {{.PublicURL}}/install.sh | sudo bash -s -- --uninstall</code>;OpenWrt 运行 <code>wget -qO- {{.PublicURL}}/install.sh | sh -s -- --uninstall</code>;Windows 运行 <code>&amp; ([scriptblock]::Create((irm {{.PublicURL}}/install.ps1))) -Uninstall</code>。</p>
     </section>
   {{else if .TokenPrefix}}
     <section class="card">
