@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily cfhub backup
+
+[Timer]
+OnCalendar=*-*-* 19:40:00 UTC
+RandomizedDelaySec=20m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

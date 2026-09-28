@@ -171,6 +171,26 @@ cfhub.example.com {
 
 域名要直连源站，不能套会改写客户端地址的 CDN，否则 cfhub 拿不到上报者的真实 IP。
 
+## 备份（`cfhub/backup/`）
+
+cfhub 服务器每天做一次备份：数据库在线快照（先做完整性检查）加上配置文件，打包后用 [age](https://age-encryption.org) 加密给维护者的公钥。本机保留最近 7 份，再推送到异地接收端。解密用的私钥只在维护者自己的电脑上，服务器和接收端都只有密文。一份备份目前约 64KB。
+
+- `cfhub-backup.sh` + `cfhub-backup.service/.timer`：服务器上的发送端。配置在 `/etc/cfhub-backup/`：`recipient` 放 age 公钥，`id_ed25519` 是推送用的 SSH 密钥，`known_hosts` 固定接收端的主机公钥，`targets` 每行一个 `user@host[:port]`。
+- `receiver.sh`：帮忙存备份的人在自己的机器上以 root 运行一次：
+
+  ```bash
+  curl -fsSL <receiver.sh 地址> | sudo bash -s -- '<cfhub 服务器的公钥>' ['<维护者恢复用的公钥>']
+  ```
+
+  它会建一个无密码用户 `cfhub-backup`，只允许给定的公钥登录，登录后只能执行 `put`（上传）、`list`（列出）、`get <名字>|latest`（取回）：没有 shell、不能转发端口，只接受 age 加密文件。最多保留 30 份、总共不超过 1GB，50 分钟内最多收一份（即使 cfhub 服务器被入侵，也没法在短时间内用垃圾文件挤掉历史备份）。脚本不改 sshd 配置，不开端口，不装软件，没有后台服务。卸载：`... | sudo bash -s -- --uninstall`。
+
+恢复：
+
+```bash
+ssh cfhub-backup@<接收端> get latest > backup.age
+age -d -i <私钥文件> backup.age | tar -xzf -     # 得到 hub.db、env、MANIFEST
+```
+
 ## 测试
 
 ```bash

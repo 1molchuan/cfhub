@@ -1,0 +1,9 @@
+[Unit]
+Description=cfhub encrypted backup (local + off-site receivers)
+After=network-online.target cfhub.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cfhub-backup
+Nice=10
