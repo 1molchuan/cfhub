@@ -14,6 +14,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -50,6 +51,9 @@ type Config struct {
 	DLMirrors []string
 	// RegionBase serves ip2region_v4.xdb (provinces for the volunteer map).
 	RegionBase string
+	// ExtraCandidates are sent to every prober to re-test besides the pools, e.g. another pool to
+	// compare against on every line (CFHUB_EXTRA_CANDIDATES, comma-separated IPs).
+	ExtraCandidates []netip.Addr
 }
 
 func env(name, fallback string) string {
@@ -104,6 +108,11 @@ func loadConfig() (Config, error) {
 	for _, raw := range strings.Split(os.Getenv("CFHUB_DL_MIRRORS"), ",") {
 		if mirror := strings.TrimRight(strings.TrimSpace(raw), "/"); strings.HasPrefix(mirror, "https://") {
 			c.DLMirrors = append(c.DLMirrors, mirror)
+		}
+	}
+	for _, raw := range strings.Split(os.Getenv("CFHUB_EXTRA_CANDIDATES"), ",") {
+		if addr, err := netip.ParseAddr(strings.TrimSpace(raw)); err == nil {
+			c.ExtraCandidates = append(c.ExtraCandidates, addr)
 		}
 	}
 	for _, raw := range strings.Split(os.Getenv("CFHUB_ADMINS"), ",") {

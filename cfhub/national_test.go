@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
+	"net/netip"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -123,5 +127,33 @@ func TestNationalPoolIsPushedAndShown(t *testing.T) {
 	}
 	if resp := te.do(t, "GET", "/api/v1/history?isp=national", "", "", nil); resp.StatusCode != 200 {
 		t.Fatalf("history for the nationwide pool: %d", resp.StatusCode)
+	}
+}
+
+// Probers are asked to re-test the nationwide pool too (a line without its own pool gets nothing
+// else from the hub), and configured extras of their family that are Cloudflare's.
+func TestCandidatesIncludeTheNationwidePoolAndExtras(t *testing.T) {
+	te := newTestEnv(t, "")
+	te.hub.cfg.ExtraCandidates = []netip.Addr{netip.MustParseAddr("104.16.9.9"), netip.MustParseAddr("203.0.113.1"), netip.MustParseAddr("2606:4700::9")}
+	for i, from := range []string{"58.247.1.9", "58.247.2.9", "120.192.1.9", "120.192.2.9"} {
+		tok := te.user(t, int64(70+i), fmt.Sprintf("u%d", i))
+		te.do(t, "POST", "/api/v1/probe/report", tok, from, report("104.16.1.1", "104.16.2.1"))
+	}
+	te.hub.runAggregation(context.Background())
+	if p := te.hub.pool(nationalISP, 4); p == nil || !p.Published {
+		t.Fatalf("no nationwide pool to hand out: %+v", p)
+	}
+	edu := te.user(t, 80, "edu") // 58.247.22.0/24 is CERNET in the test table: no line pool yet
+	var got struct {
+		ISP string   `json:"isp"`
+		IPs []string `json:"ips"`
+	}
+	_ = json.NewDecoder(te.do(t, "GET", "/api/v1/probe/candidates?family=4", edu, "58.247.22.5", nil).Body).Decode(&got)
+	if got.ISP != "cernet" || !reflect.DeepEqual(got.IPs[:3], []string{"104.16.1.1", "104.16.2.1", "104.16.9.9"}) || slices.Contains(got.IPs, "203.0.113.1") {
+		t.Fatalf("candidates %+v; want the nationwide pool, then the Cloudflare extra, never the non-Cloudflare one", got)
+	}
+	_ = json.NewDecoder(te.do(t, "GET", "/api/v1/probe/candidates?family=6", edu, "58.247.22.5", nil).Body).Decode(&got)
+	if !reflect.DeepEqual(got.IPs, []string{"2606:4700::9"}) {
+		t.Fatalf("IPv6 candidates %v; want just the IPv6 extra", got.IPs)
 	}
 }

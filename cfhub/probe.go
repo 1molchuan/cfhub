@@ -208,9 +208,18 @@ func (h *Hub) handleCandidates(w http.ResponseWriter, r *http.Request) {
 			out = append(out, ip)
 		}
 	}
-	if pool := h.pool(isp, family); pool != nil {
-		for _, ip := range pool.IPs {
-			add(ip.IP)
+	// This line's pool, then the nationwide one (IPs good on several lines, re-tested on every line,
+	// and all a line without its own pool has), then any configured extras.
+	for _, key := range []string{isp, nationalISP} {
+		if pool := h.pool(key, family); pool != nil {
+			for _, ip := range pool.IPs {
+				add(ip.IP)
+			}
+		}
+	}
+	for _, addr := range h.cfg.ExtraCandidates {
+		if addr.Is4() == (family == 4) && h.net.IsCloudflare(addr) {
+			add(addr.String())
 		}
 	}
 	if reports, err := h.store.ActiveReports(time.Now().Add(-h.cfg.ReportTTL).Unix()); err == nil {
