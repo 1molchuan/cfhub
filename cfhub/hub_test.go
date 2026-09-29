@@ -451,6 +451,40 @@ func TestAdminIsHiddenAndFormsNeedCSRF(t *testing.T) {
 	}
 }
 
+// A user who already has a token must still find the install commands (for another machine), with
+// a placeholder: the token is stored hashed and must not be regenerated just to see them.
+func TestJoinShowsInstallCommandsToUsersWithAToken(t *testing.T) {
+	te := newTestEnv(t, "")
+	te.user(t, 7, "carol")
+	raw := te.hub.signedValue("session", time.Hour, "7")
+	get := func(cookie string) string {
+		resp := te.do(t, "GET", "/join", "", "", nil, [2]string{"Cookie", cookie})
+		body, _ := io.ReadAll(resp.Body)
+		return string(body)
+	}
+	body := get(sessionCookie + "=" + raw)
+	for _, want := range []string{"重新生成 token", "install.sh | sudo bash -s -- &lt;你的 token&gt;", "CFHUB_TOKEN=&lt;你的 token&gt;", "-Token &lt;你的 token&gt;"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("/join for a user with a token lacks %q", want)
+		}
+	}
+	if strings.Contains(get(""), "install.sh | sudo bash") {
+		t.Fatal("/join shows install commands to visitors who are not logged in")
+	}
+	req, _ := http.NewRequest("POST", te.server.URL+"/me/token", strings.NewReader(url.Values{"csrf": {te.hub.csrfToken(session{Raw: raw})}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Cookie", sessionCookie+"="+raw)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	fresh, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(fresh), "install.sh | sudo bash -s -- cfp_") || strings.Contains(string(fresh), "&lt;你的 token&gt;") {
+		t.Fatal("a fresh token is not filled into the install commands")
+	}
+}
+
 func TestMyProbersAndAdminPagesShowCloudLinesAndServerCounts(t *testing.T) {
 	te := newTestEnv(t, "")
 	if err := te.hub.net.setCloud("aliyun 47.100.0.0/16\n"); err != nil {
