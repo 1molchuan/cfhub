@@ -4,6 +4,7 @@
 
 - 公开实例：https://cfhub.1molchuan.top
 - 协议：[AGPL-3.0](LICENSE)
+- 使用这些池子的 DoH 也已开源：[github.com/1molchuan/edge-smart-doh](https://github.com/1molchuan/edge-smart-doh)。它怎样判断访问者的运营商、怎样在运营商池、全国池和其他池子之间选择，以及 cfhub 推送的令牌能做什么、不能做什么，都写在它的 README 里（"和 cfhub 的关系"一节）。
 
 | 目录 | 内容 |
 |---|---|
@@ -165,7 +166,7 @@ curl -s https://cfhub.1molchuan.top/dl/manifest.json
 
 **全国池**（`national`，同样在 `aggregate.go`）：把电信、联通、移动、教育网、国内云厂商中**已发布**的池汇总成一个，每类线路算一份，志愿者多的线路不会压过其他线路。先选多类线路都认可的 IP（认可的线路越多越靠前，同样多时比平均名次），剩下的位置轮流用各线路自己最好的 IP 补上，同一个 /24 最多 2 个。至少 2 类线路的池已发布时，全国池才发布。"其他"类（境外等）不参与。DoH 把全国池给不属于这几类线路的访问者，也用它补某类线路缺少的 IPv4 / IPv6；全国池过期后，退回维护者自己几台探测机的池。
 
-已发布的池会推送给 DoH（`CFHUB_DOH_URL` + `HUB_TOKEN`，每 5 分钟一次，有效期 30 分钟）。推送用的令牌只能写运营商池。cfhub 停止后，DoH 里的运营商池会自然过期，回到全国池。
+已发布的池会推送给 DoH（`CFHUB_DOH_URL` + `HUB_TOKEN`，每 5 分钟一次，有效期 30 分钟）。推送用的令牌只能写运营商池。cfhub 停止后，DoH 里的运营商池会自然过期，回到全国池。DoH 一侧怎样使用这些池子，见 [edge-smart-doh](https://github.com/1molchuan/edge-smart-doh#和-cfhub-的关系)。
 
 ## 公开 API
 
