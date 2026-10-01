@@ -577,7 +577,7 @@ func TestInstallerCarriesChecksums(t *testing.T) {
 			t.Errorf("install.sh lacks the %s checksum", key)
 		}
 	}
-	for _, want := range []string{"/etc/openwrt_release", "DISTRIB_ARCH", "/etc/crontabs/cfprobe", "logger -t cfprobe", "opkg install", "apk add", "apt-get install", "ca-certificates", "--dir", `--direct) DIRECT=" -direct auto"`, "history4.json$UPDATE$DIRECT"} {
+	for _, want := range []string{"/etc/openwrt_release", "DISTRIB_ARCH", "/etc/crontabs/cfprobe", "logger -t cfprobe", "opkg install", "apk add", "apt-get install", "ca-certificates", "--dir", `--direct) DIRECT=" -direct auto"`, "history4.json$UPDATE$DIRECT", "/etc/init.d/openclash", "GROUP=65534"} {
 		if !strings.Contains(string(sh), want) {
 			t.Errorf("install.sh lacks %q", want)
 		}

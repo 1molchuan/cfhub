@@ -244,6 +244,29 @@ if ! id cfprobe >/dev/null 2>&1; then
   fi
 fi
 
+# A transparent proxy on the router (OpenClash, PassWall...) also catches the router's own traffic in
+# its OUTPUT rules, and -direct cannot escape those: binding an interface does not skip netfilter's
+# REDIRECT or fwmark routing. The prober then measures the proxy, or times out when bound to the WAN
+# (2026-10-01, OpenClash on a PPPoE router). OpenClash lets out everything in group 65534, the group
+# its own core runs in, in all its chains (fw4 and iptables): the prober runs in that group, so it
+# measures this router's line. Files it reads are then its own (owner), not its group's.
+GROUP=cfprobe
+if [ -n "$OPENWRT" ]; then
+  if [ -x /etc/init.d/openclash ]; then
+    GROUP=65534
+    say "OpenClash found: the prober runs in group 65534, which OpenClash sends out directly, so it measures this router's own line"
+  else
+    for p in passwall passwall2 nikki homeproxy shellcrash ShellCrash; do
+      [ -x "/etc/init.d/$p" ] || continue
+      say "warning: $p found. If it proxies this router's own traffic, exempt user cfprobe in its settings, or the prober measures the proxy instead of your line"
+      break
+    done
+  fi
+  gid=$GROUP
+  [ "$gid" = cfprobe ] && gid=$(sed -n 's/^cfprobe:[^:]*:\([0-9]*\):.*/\1/p' /etc/group)
+  sed -i "s/^\(cfprobe:[^:]*:[0-9]*:\)[0-9]*:/\1$gid:/" /etc/passwd
+fi
+
 [ -n "$OPENWRT" ] || systemctl stop cfprobe.service 2>/dev/null || true
 mkdir -p "$STATE" "$CONF"
 chown cfprobe:cfprobe "$STATE"
@@ -253,11 +276,18 @@ chown cfprobe:cfprobe "$STATE/.cfprobe.new"
 chmod 0755 "$STATE/.cfprobe.new"
 mv -f "$STATE/.cfprobe.new" "$BIN"
 rm -f "$LEGACY_BIN" # installs before self-update kept the binary here
-chown root:cfprobe "$CONF"
-chmod 0750 "$CONF"
 (umask 077; printf '%s' "$TOKEN" > "$CONF/token")
-chown root:cfprobe "$CONF/token"
-chmod 0640 "$CONF/token"
+if [ "$GROUP" = cfprobe ]; then
+  chown root:cfprobe "$CONF" "$CONF/token"
+  chmod 0750 "$CONF"
+  chmod 0640 "$CONF/token"
+else
+  # Not in group cfprobe: the token is the prober's own, the directory stays root's.
+  chown root:root "$CONF"
+  chmod 0755 "$CONF"
+  chown cfprobe "$CONF/token"
+  chmod 0400 "$CONF/token"
+fi
 printf '%s\n' "$STATE" > "$CONF/dir"
 
 if [ -n "$OPENWRT" ]; then
