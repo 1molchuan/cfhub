@@ -15,7 +15,11 @@ import (
 )
 
 const (
-	maxReportIPs   = 64
+	// Every IP that passed, not a top slice: a pool counts an IP missing from a report as one that
+	// failed, and at 64 nearly every report was full (2026-10-01: lines pass 100+ IPs tied within a
+	// few ms), so the cut-off decided the votes and the cloud pool lost its majority. A run tests
+	// about 150 IPs; 256 at roughly 70 bytes each fits the body limit.
+	maxReportIPs   = 256
 	maxReportBody  = 64 << 10
 	maxCandidates  = 64
 	candidatesEach = 8 // top IPs taken from each other prober's latest report

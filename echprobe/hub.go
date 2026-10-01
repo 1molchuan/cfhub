@@ -27,8 +27,12 @@ const (
 	defaultHubCandidates  = "cf.090227.xyz,cmcc.090227.xyz,cu.090227.xyz,ct.090227.xyz,skk.moe,yx.cloudflare.182682.xyz,cfip.xxxxxxxx.tk,www.visa.com.hk,openai.com,cloudflare-ip.mofashi.ltd,saas.sin.fan,cf.877774.xyz,cf.0sm.com,cf.130519.xyz,ip.164746.xyz,www.visa.com.sg,www.visa.com.tw,icook.tw,icook.hk,japan.com,www.digitalocean.com,www.shopify.com,www.udemy.com,www.hugedomains.com,www.ipget.net,www.gov.ua"
 	defaultHubSampleCIDRs = "104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,162.158.0.0/15,188.114.96.0/20,190.93.240.0/20"
 	defaultHubResolver    = "https://223.5.5.5/dns-query"
-	hubMaxIPs             = 64 // the hub accepts at most this many per report
-	hubMinIPs             = 2  // a pool needs two agreed IPs; fewer is not worth sending
+	// Every IP that passed (a run tests about 150): the hub reads an IP missing from a report as one
+	// that failed, so a top-64 cut made near-tied IPs lose votes at random (release 9). The hub
+	// accepts 256; hubs before 2026-10-01 accepted 64.
+	hubMaxIPs       = 256
+	legacyHubMaxIPs = 64
+	hubMinIPs       = 2 // a pool needs two agreed IPs; fewer is not worth sending
 )
 
 // hubClient offers classical key exchange only, like dohTransport: Go's default post-quantum key
@@ -233,6 +237,11 @@ func hubRun(doh, resolver, candidates, target string, rounds int, timeout time.D
 		os.Exit(3)
 	}
 	status, reply, err := sendHubReport(apis, token, hubReportBody(ranked, ipFamily))
+	if err == nil && status == http.StatusBadRequest && strings.Contains(reply, "at most") && len(ranked) > legacyHubMaxIPs {
+		// A hub from before 2026-10-01 (or a self-hosted one) takes 64: send the best 64 instead.
+		fmt.Fprintf(os.Stderr, "hub takes fewer IPs (%s); sending the best %d\n", reply, legacyHubMaxIPs)
+		status, reply, err = sendHubReport(apis, token, hubReportBody(ranked[:legacyHubMaxIPs], ipFamily))
+	}
 	switch {
 	case err != nil:
 		fmt.Fprintln(os.Stderr, "report failed:", err)

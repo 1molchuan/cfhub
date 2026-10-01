@@ -32,7 +32,9 @@ func TestHubDialClampsTheSegmentSize(t *testing.T) {
 	}
 	var mss int
 	var getErr error
-	_ = raw.Control(func(fd uintptr) { mss, getErr = syscall.GetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_MAXSEG) })
+	_ = raw.Control(func(fd uintptr) {
+		mss, getErr = syscall.GetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_MAXSEG)
+	})
 	if getErr != nil || mss <= 0 || mss > hubMSS {
 		t.Fatalf("TCP_MAXSEG on a hub connection = %d (%v), want 1..%d", mss, getErr, hubMSS)
 	}

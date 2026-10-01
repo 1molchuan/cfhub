@@ -141,6 +141,27 @@ func TestReportIsTaggedFilteredAndRateLimited(t *testing.T) {
 	}
 }
 
+// A prober reports every IP that passed (a run tests ~150): a full 256-IP report fits, 257 do not.
+func TestReportTakesEveryPassingIPUpTo256(t *testing.T) {
+	te := newTestEnv(t, "")
+	ips := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = fmt.Sprintf("104.16.%d.%d", i/200, i%200+1)
+		}
+		return out
+	}
+	if resp := te.do(t, "POST", "/api/v1/probe/report", te.user(t, 12, "carol"), "58.247.1.9", report(ips(257)...)); resp.StatusCode != 400 {
+		t.Fatalf("257 IPs: %d, want 400", resp.StatusCode)
+	}
+	resp := te.do(t, "POST", "/api/v1/probe/report", te.user(t, 13, "dave"), "58.247.2.9", report(ips(256)...))
+	var got map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&got)
+	if resp.StatusCode != 200 || got["accepted"] != float64(256) {
+		t.Fatalf("256 IPs: %d %v, want all 256 accepted", resp.StatusCode, got)
+	}
+}
+
 func TestReportRejectsBadTokensBannedUsersAndNonCloudflareOnly(t *testing.T) {
 	te := newTestEnv(t, "")
 	token := te.user(t, 11, "bob")
