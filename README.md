@@ -37,7 +37,7 @@
 - Docker：加 `-e CFPROBE_DIRECT=auto`（需要 `--network host`）。
 - 直接运行：`cfprobe -direct auto ...` 或 `-direct en0`。
 
-自动选网卡的规则：已启用、有硬件地址、不是点对点隧道或虚拟网桥、有对应地址族公网地址的网卡里，系统顺序最靠前的那个。运行时第一行会打印选中的网卡。PPPoE 拨号的路由器上，公网地址在 `pppoe-wan` 这类点对点接口上，自动选择选不到它，请写明 `--direct=pppoe-wan`。
+自动选网卡的规则：已启用、有硬件地址、不是点对点隧道或虚拟网桥、有对应地址族公网地址的网卡里，系统顺序最靠前的那个。运行时第一行会打印选中的网卡。PPP 链路（OpenWrt 的 `pppoe-wan`、`ppp0`）虽然是点对点、没有硬件地址，也算物理网卡：PPPoE 拨号的路由器上公网地址就在它上面（release 8 起；之前要写明 `--direct=pppoe-wan`）。
 
 ### 路由器上的透明代理（OpenClash、PassWall 等）
 
@@ -87,6 +87,8 @@ docker run -d --name cfprobe --restart unless-stopped --network host \
 这个地址写在签名清单里，所以 cfhub 服务器或镜像改不了你的上报去向；以后要换路线，也只需重新签一份清单，不用发新版本。即使关闭了自动更新，也会用清单里的地址。
 
 需要知道的是：走这条路时，HTTPS 连接在 CDN 节点上解开，再由节点转发给 cfhub。所以 CDN 节点能看到你的 token、上报内容和你的 IP。CDN 节点会把你的真实 IP 通过 `X-Real-IP` 转给 cfhub，用于判断线路类别。日志里的 `... via https://...` 会写明每次请求走的是哪条路。
+
+连 cfhub 的连接（两条路都是）在 Linux 和 macOS 上把 TCP 分段限制在 1200 字节（`echprobe/hub.go` 的 `hubMSS`，release 8 起）。有的线路会丢掉满尺寸的上行包，同时拦掉让发送方改小包的 ICMP，结果小请求能通、几 KB 的上报一直卡住；限制分段大小后上报也能过去。cfhub 源站自己也把 443 端口的 MSS 限制在 1200。Windows 没有这个套接字选项，只靠源站一侧。
 
 ### 一次运行的过程（`echprobe/hub.go`）
 
