@@ -36,13 +36,23 @@ func dialer(timeout time.Duration) *net.Dialer {
 // Interfaces never picked by -direct auto: bridges and links for VMs, containers and Apple services.
 var virtualPrefixes = []string{"bridge", "docker", "br-", "veth", "virbr", "vmnet", "vboxnet", "awdl", "llw", "anpi", "ap1", "utun", "tun", "tap", "wg", "tailscale", "zt"}
 
+// isPPP reports a PPP link (pppoe-wan on OpenWrt, ppp0): point-to-point without a hardware address
+// like a tunnel, but on a PPPoE router it carries the line's public address (2026-10-01).
+func isPPP(name string) bool {
+	name = strings.ToLower(name)
+	return strings.HasPrefix(name, "ppp")
+}
+
 // pickInterface chooses the interface -direct auto binds to: up, with a hardware address, not a
 // tunnel (point-to-point) or virtual bridge, with a global address of the family; the first in the
-// system's order (the built-in port before later ones).
+// system's order (the built-in port before later ones). PPP links count as physical.
 func pickInterface(ifaces []net.Interface, addrs func(net.Interface) ([]net.Addr, error), family int) (*net.Interface, []net.IP, error) {
 	for i := range ifaces {
 		ifi := ifaces[i]
-		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&(net.FlagLoopback|net.FlagPointToPoint) != 0 || len(ifi.HardwareAddr) == 0 {
+		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if !isPPP(ifi.Name) && (ifi.Flags&net.FlagPointToPoint != 0 || len(ifi.HardwareAddr) == 0) {
 			continue
 		}
 		virtual := false
@@ -111,8 +121,7 @@ func setupDirect(name string, family int) error {
 	dohTransport.DialContext = dialer(10 * time.Second).DialContext
 	dohTransport.CloseIdleConnections()
 	hubTransport := hubClient.Transport.(*http.Transport)
-	hubTransport.DialContext = dialer(15 * time.Second).DialContext
-	hubTransport.CloseIdleConnections()
+	hubTransport.CloseIdleConnections() // hubDial binds new ones through dialer()
 	fmt.Fprintf(os.Stderr, "direct: every connection via %s %v, names via %s\n", ifi.Name, ips, directDNS)
 	return nil
 }

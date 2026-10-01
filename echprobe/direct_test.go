@@ -44,6 +44,32 @@ func TestPickInterfaceSkipsTunnelsAndBridges(t *testing.T) {
 	}
 }
 
+// An OpenWrt PPPoE router: the Ethernet port under PPPoE and the LAN ports carry no global address,
+// the bridge is skipped, and the line's address sits on pppoe-wan (point-to-point, no MAC).
+func TestPickInterfacePicksPPPoEWan(t *testing.T) {
+	mac := net.HardwareAddr{2, 0, 0, 0, 0, 1}
+	up := net.FlagUp | net.FlagBroadcast
+	ifaces := []net.Interface{
+		{Index: 1, Name: "lo", Flags: net.FlagUp | net.FlagLoopback},
+		{Index: 2, Name: "eth0", Flags: up, HardwareAddr: mac},
+		{Index: 3, Name: "eth4", Flags: up, HardwareAddr: mac},
+		{Index: 4, Name: "br-lan", Flags: up, HardwareAddr: mac},
+		{Index: 5, Name: "tun0", Flags: net.FlagUp | net.FlagPointToPoint}, // a proxy's TUN: still skipped
+		{Index: 6, Name: "pppoe-wan", Flags: net.FlagUp | net.FlagPointToPoint},
+	}
+	addrs := map[string][]net.Addr{
+		"br-lan":    {&net.IPNet{IP: net.ParseIP("192.168.2.1"), Mask: net.CIDRMask(24, 32)}},
+		"tun0":      {&net.IPNet{IP: net.ParseIP("198.18.0.1"), Mask: net.CIDRMask(30, 32)}},
+		"pppoe-wan": {&net.IPNet{IP: net.ParseIP("198.51.100.135"), Mask: net.CIDRMask(32, 32)}, &net.IPNet{IP: net.ParseIP("2001:db8:244e::916a"), Mask: net.CIDRMask(64, 128)}},
+	}
+	lookup := func(i net.Interface) ([]net.Addr, error) { return addrs[i.Name], nil }
+	for _, family := range []int{4, 6} {
+		if ifi, _, err := pickInterface(ifaces, lookup, family); err != nil || ifi.Name != "pppoe-wan" {
+			t.Fatalf("IPv%d: %v %v; want pppoe-wan", family, ifi, err)
+		}
+	}
+}
+
 // With CFPROBE_TEST_DIRECT=auto (or an interface name), print the public address seen with and
 // without -direct: behind a TUN proxy the two must differ.
 func TestDirectReachesTheInternetOutsideTheTunnel(t *testing.T) {

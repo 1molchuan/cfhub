@@ -2,14 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -33,11 +36,35 @@ const (
 // to the hub timed out on every report (2026-09-26) while one-segment handshakes went through.
 var hubClient = &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
 	Proxy:               http.ProxyFromEnvironment,
+	DialContext:         hubDial,
 	ForceAttemptHTTP2:   true,
 	TLSHandshakeTimeout: 15 * time.Second,
 	IdleConnTimeout:     30 * time.Second,
 	TLSClientConfig:     &tls.Config{CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256}},
 }}
+
+// hubMSS caps the TCP segments sent to the hub. A report is a few KB; a line that drops full-size
+// upstream packets while blocking the ICMP that would shrink them (a PMTU black hole) lets the small
+// candidates request through and stalls every report (2026-09-29, Shanghai Mobile: reports up to
+// ~1.4 KB went through, larger ones hung on both routes). The hub origin clamps its side too, but
+// the edge route's CDN does not. Linux and macOS only: Windows has no such socket option.
+const hubMSS = 1200
+
+// hubDial dials the hub: bound to the -direct interface when set (see dialer), segments capped at hubMSS.
+func hubDial(ctx context.Context, network, addr string) (net.Conn, error) {
+	d := dialer(15 * time.Second)
+	bind := d.Control
+	d.Control = func(network, address string, c syscall.RawConn) error {
+		if bind != nil {
+			if err := bind(network, address, c); err != nil {
+				return err
+			}
+		}
+		// Best effort: an unclamped connection still works on most lines.
+		return c.Control(func(fd uintptr) { _ = clampMSS(fd, hubMSS) })
+	}
+	return d.DialContext(ctx, network, addr)
+}
 
 type hubCandidates struct {
 	ISP  string   `json:"isp"`
@@ -175,6 +202,11 @@ func hubRun(doh, resolver, candidates, target string, rounds int, timeout time.D
 	var peers []string
 	if hubPeers, err := fetchHubCandidates(apis, token, ipFamily); err != nil {
 		fmt.Fprintln(os.Stderr, "hub candidates unavailable (continuing without):", err)
+		if directDialer != nil {
+			// 2026-10-01: OpenClash on the router redirected the prober's own connections; bound to the
+			// WAN they could only time out.
+			fmt.Fprintln(os.Stderr, "hint: with -direct, a transparent proxy on this machine (OpenClash, PassWall...) can still catch the prober's traffic in its firewall rules; exempt user cfprobe in it")
+		}
 	} else {
 		fmt.Fprintf(os.Stderr, "hub: this line is %s (%s); %d candidates from the hub\n", hubPeers.Name, hubPeers.ISP, len(hubPeers.IPs))
 		for _, ip := range hubPeers.IPs {
