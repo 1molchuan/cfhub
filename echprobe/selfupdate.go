@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // Volunteer self-update (-hub mode). A release is a manifest listing each platform binary's sha256,
@@ -25,7 +27,7 @@ import (
 // prober's own state directory); the new one takes effect at the next run. -no-update turns it off.
 
 // releaseSeq is this build's release number. Bump it for every release, before building.
-const releaseSeq = 10
+const releaseSeq = 11
 
 // releasePublicKey verifies release manifests (base64, ed25519).
 const releasePublicKey = "pZvca84iii/7oUhLtAuvGls4U5dNbh64pCqhJnDTZps="
@@ -100,6 +102,58 @@ func fetchLimited(url string, limit int64) ([]byte, error) {
 	return body, nil
 }
 
+// A release binary is several MB, and some routes are capped at a few hundred KB/s (2026-10-04: 7.8 MB
+// from a 10 Mbps CDN node took 32 s, past hubClient's 30 s, and the update to release 10 failed on
+// every source). Binaries therefore get their own limits: the whole update may take updateBudget,
+// and a download is dropped once no data has arrived for updateStall.
+var (
+	updateBudget = 3 * time.Minute
+	updateStall  = 30 * time.Second
+)
+
+// progressReader calls onRead for every read that returned data.
+type progressReader struct {
+	r      io.Reader
+	onRead func()
+}
+
+func (p progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	if n > 0 {
+		p.onRead()
+	}
+	return n, err
+}
+
+// fetchBinary downloads a release binary within ctx, giving up when it stalls for updateStall.
+func fetchBinary(ctx context.Context, url string, limit int64) ([]byte, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stall := time.AfterFunc(updateStall, cancel)
+	defer stall.Stop()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	// updateClient's transport (key exchange, MSS, -direct), without its 30 s whole-request timeout.
+	resp, err := (&http.Client{Transport: updateClient.Transport}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s: HTTP %d", url, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(progressReader{resp.Body, func() { stall.Reset(updateStall) }}, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w after %d bytes", url, err, len(body))
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("%s: larger than %d bytes", url, limit)
+	}
+	return body, nil
+}
+
 // loadManifest fetches the hub's release manifest and verifies its signature.
 func loadManifest(hub string) (releaseManifest, error) {
 	raw, err := fetchLimited(hub+"/dl/manifest.json", 64<<10)
@@ -132,10 +186,15 @@ func selfUpdate(hub string, m releaseManifest) (int, error) {
 	if exe, err = filepath.EvalSymlinks(exe); err != nil {
 		return 0, err
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), updateBudget)
+	defer cancel()
 	var bin []byte
 	var lastErr error
 	for _, src := range append(m.Sources, hub+"/dl") {
-		body, err := fetchLimited(strings.TrimRight(src, "/")+"/"+name, maxReleaseBinary)
+		if ctx.Err() != nil {
+			break
+		}
+		body, err := fetchBinary(ctx, strings.TrimRight(src, "/")+"/"+name, maxReleaseBinary)
 		if err != nil {
 			lastErr = err
 			continue

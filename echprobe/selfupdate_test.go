@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeRelease struct {
@@ -130,6 +132,39 @@ func TestSelfUpdateInstallsOnlyASignedNewerMatchingRelease(t *testing.T) {
 				t.Fatalf("binary is %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+// A slow download that keeps making progress finishes even when it takes longer than the stall limit
+// (and than hubClient's whole-request timeout would allow); one that stops sending is dropped.
+func TestBinaryDownloadToleratesSlowLinksButNotStalls(t *testing.T) {
+	saved, savedClient := updateStall, updateClient
+	t.Cleanup(func() { updateStall, updateClient = saved, savedClient })
+	updateStall = 150 * time.Millisecond
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pause := 50 * time.Millisecond // slow but steady: 8 chunks, 400 ms in all
+		if r.URL.Path == "/stall" {
+			pause = 400 * time.Millisecond
+		}
+		for i := 0; i < 8; i++ {
+			_, _ = w.Write([]byte("chunk"))
+			w.(http.Flusher).Flush()
+			select {
+			case <-time.After(pause):
+			case <-r.Context().Done():
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	updateClient = srv.Client()
+
+	body, err := fetchBinary(context.Background(), srv.URL+"/slow", 1<<20)
+	if err != nil || len(body) != 40 {
+		t.Fatalf("slow download: %d bytes, %v; want all 40 bytes", len(body), err)
+	}
+	if _, err := fetchBinary(context.Background(), srv.URL+"/stall", 1<<20); err == nil {
+		t.Fatal("a stalled download must fail")
 	}
 }
 
