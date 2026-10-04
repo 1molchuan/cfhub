@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -99,5 +101,30 @@ func TestParseHostsFile(t *testing.T) {
 	// The IPv6 address for raw must be skipped (IPv4 only).
 	if out["raw.githubusercontent.com"]["2606:50c0::133"] {
 		t.Fatal("IPv6 candidate must be skipped")
+	}
+}
+
+func TestFetchGithubCandidatesLocalFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "github-extra-hosts")
+	body := "# regional entry IPs\n20.27.177.113 github.com\n185.199.108.133 raw.githubusercontent.com\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	filter := []string{"github.com", ".githubusercontent.com"}
+
+	// A source without a scheme is read from disk instead of http.Client.Get.
+	got := fetchGithubCandidates([]string{path}, filter, "")
+	want := map[string][]string{
+		"github.com":                {"20.27.177.113"},
+		"raw.githubusercontent.com": {"185.199.108.133"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("local-file candidates = %v, want %v", got, want)
+	}
+
+	// An unreadable local source is skipped like an unreachable URL, not fatal.
+	got = fetchGithubCandidates([]string{filepath.Join(t.TempDir(), "no-such-file"), path}, filter, "")
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("after a missing local source, candidates = %v, want %v", got, want)
 	}
 }

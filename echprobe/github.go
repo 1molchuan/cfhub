@@ -237,6 +237,16 @@ func fetchGithubCandidates(sources, filter []string, resolver string) map[string
 		client.Transport = &http.Transport{DialContext: (&net.Dialer{Timeout: 10 * time.Second, Resolver: res}).DialContext}
 	}
 	for _, url := range sources {
+		// A source without a scheme is a local hosts file (deploy/prober/github-extra-hosts).
+		if !strings.Contains(url, "://") {
+			body, err := os.ReadFile(url)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "source %s: %v\n", url, err)
+				continue
+			}
+			parseHostsFile(string(body), filter, out)
+			continue
+		}
 		resp, err := client.Get(url)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "source %s: %v\n", url, err)
