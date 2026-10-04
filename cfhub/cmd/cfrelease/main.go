@@ -35,6 +35,7 @@ type manifest struct {
 	Files   map[string]string `json:"files"`
 	Sources []string          `json:"sources"`
 	API     []string          `json:"api,omitempty"`
+	API6    []string          `json:"api6,omitempty"`
 }
 
 func main() {
@@ -44,6 +45,7 @@ func main() {
 	dist := flag.String("dist", "", "directory holding the cfprobe binaries")
 	sources := flag.String("sources", "", "comma-separated https base URLs serving the binaries (the hub's /dl is always tried last)")
 	api := flag.String("api", "", "comma-separated https base URLs proxying the hub's /api/v1/probe/* (the hub itself is always tried last)")
+	api6 := flag.String("api6", "", "comma-separated https base URLs of the probe API reachable over IPv6 through Cloudflare, used first by IPv6 runs so the hub sees the line's IPv6 address")
 	flag.Parse()
 
 	if *genkey != "" {
@@ -76,6 +78,7 @@ func main() {
 	}
 	m.Sources = httpsList(*sources)
 	m.API = httpsList(*api)
+	m.API6 = httpsList(*api6)
 	body, err := json.MarshalIndent(m, "", "  ")
 	check(err)
 	body = append(body, '\n')

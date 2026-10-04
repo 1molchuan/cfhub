@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -53,14 +55,14 @@ func TestHubClientSendsTokenAndReadsCandidates(t *testing.T) {
 	}))
 	defer hub.Close()
 
-	got, err := fetchHubCandidates([]string{hub.URL}, "cfp_test", 6)
+	got, err := fetchHubCandidates(plainRoutes([]string{hub.URL}), "cfp_test", 6)
 	if err != nil || got.ISP != "chinanet" || !reflect.DeepEqual(got.IPs, []string{"2606:4700::1"}) {
 		t.Fatalf("candidates %+v, %v", got, err)
 	}
-	if _, err := fetchHubCandidates([]string{hub.URL}, "cfp_wrong", 6); err == nil {
+	if _, err := fetchHubCandidates(plainRoutes([]string{hub.URL}), "cfp_wrong", 6); err == nil {
 		t.Fatal("a refused token must be an error")
 	}
-	status, _, err := postHubReport([]string{hub.URL}, "cfp_test", []byte(`{"family":4}`))
+	status, _, err := postHubReport(plainRoutes([]string{hub.URL}), "cfp_test", []byte(`{"family":4}`))
 	if err != nil || status != http.StatusTooManyRequests || string(reported) != `{"family":4}` {
 		t.Fatalf("post: %d %v, sent %q", status, err, reported)
 	}
@@ -84,7 +86,7 @@ func TestHubAPIRoutesFallBackOnlyOnTransportFailure(t *testing.T) {
 
 	// httptest serves plain http; apiBases keeps https routes only, so test the fallback on a list
 	// built by hand and the filtering separately.
-	status, _, err := postHubReport([]string{dead.URL, edge.URL, hub.URL}, "cfp_test", []byte(`{}`))
+	status, _, err := postHubReport(plainRoutes([]string{dead.URL, edge.URL, hub.URL}), "cfp_test", []byte(`{}`))
 	if err != nil || status != http.StatusTooManyRequests || !reflect.DeepEqual(hits, []string{"edge"}) {
 		t.Fatalf("status %d err %v hits %v; want the edge's 429 and no second delivery", status, err, hits)
 	}
@@ -94,6 +96,44 @@ func TestHubAPIRoutesFallBackOnlyOnTransportFailure(t *testing.T) {
 	}
 	if got := apiBases(releaseManifest{}, "https://hub.example"); !reflect.DeepEqual(got, []string{"https://hub.example"}) {
 		t.Fatalf("without routes: %v, want the hub only", got)
+	}
+}
+
+// An IPv6 route dials the measured Cloudflare address over IPv6 whatever the URL's name resolves to,
+// and keeps only IPv6 addresses (at most maxPinnedIPv6, best first).
+func TestIPv6RouteDialsThePinnedAddress(t *testing.T) {
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skip("no IPv6 loopback:", err)
+	}
+	var seen string
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.RemoteAddr
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	srv.Listener = ln
+	srv.Start()
+	t.Cleanup(srv.Close)
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	if conn, err := net.Dial("tcp6", ln.Addr().String()); err != nil {
+		t.Skip("IPv6 loopback not reachable here:", err) // some Windows setups refuse it
+	} else {
+		conn.Close()
+	}
+
+	routes := ipv6Routes([]string{"http://api6.invalid:" + port}, []string{"104.16.1.1", "::1", "2606:4700::2", "2606:4700::3"})
+	if len(routes) != 2 || routes[0].via != "::1" || routes[1].via != "2606:4700::2" {
+		t.Fatalf("routes %v; want ::1 then 2606:4700::2 (IPv6 only, two at most)", routes)
+	}
+	status, _, err := postHubReport(routes[:1], "cfp_test", []byte(`{}`))
+	if err != nil || status != http.StatusTeapot || !strings.HasPrefix(seen, "[::1]:") {
+		t.Fatalf("status %d err %v from %q; want the pinned [::1]", status, err, seen)
+	}
+	if got := ipv6Routes(nil, []string{"::1"}); len(got) != 0 {
+		t.Fatalf("no api6 bases: %v, want no routes", got)
+	}
+	if got := ipv6Routes([]string{"https://api6.example"}, nil); len(got) != 1 || got[0].via != "" {
+		t.Fatalf("no measured address: %v, want the name dialed over IPv6", got)
 	}
 }
 
@@ -113,7 +153,7 @@ func TestHubReportRetriesUntilARouteAnswers(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(hub.Close)
-	status, _, err := sendHubReport([]string{hub.URL}, "cfp_test", []byte(`{}`))
+	status, _, err := sendHubReport(plainRoutes([]string{hub.URL}), "cfp_test", []byte(`{}`))
 	if err != nil || status != http.StatusOK || calls.Load() != 3 {
 		t.Fatalf("status %d err %v after %d calls; want 200 on the third", status, err, calls.Load())
 	}
@@ -126,7 +166,7 @@ func TestHubReportRetriesUntilARouteAnswers(t *testing.T) {
 		conn.Close()
 	}))
 	t.Cleanup(dead.Close)
-	if _, _, err := sendHubReport([]string{dead.URL}, "cfp_test", []byte(`{}`)); err == nil || calls.Load() != -100+4 {
+	if _, _, err := sendHubReport(plainRoutes([]string{dead.URL}), "cfp_test", []byte(`{}`)); err == nil || calls.Load() != -100+4 {
 		t.Fatalf("err %v after %d calls; want an error after 4 attempts", err, calls.Load()+100)
 	}
 	// Any HTTP answer is final, even a refusal: never retried.
@@ -136,7 +176,7 @@ func TestHubReportRetriesUntilARouteAnswers(t *testing.T) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	t.Cleanup(refuse.Close)
-	if status, _, err := sendHubReport([]string{refuse.URL}, "cfp_test", []byte(`{}`)); err != nil || status != http.StatusTooManyRequests || calls.Load() != 1 {
+	if status, _, err := sendHubReport(plainRoutes([]string{refuse.URL}), "cfp_test", []byte(`{}`)); err != nil || status != http.StatusTooManyRequests || calls.Load() != 1 {
 		t.Fatalf("status %d err %v after %d calls; want one 429", status, err, calls.Load())
 	}
 }

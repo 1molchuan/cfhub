@@ -88,7 +88,9 @@ docker run -d --name cfprobe --restart unless-stopped --network host \
 
 需要知道的是：走这条路时，HTTPS 连接在 CDN 节点上解开，再由节点转发给 cfhub。所以 CDN 节点能看到你的 token、上报内容和你的 IP。CDN 节点会把你的真实 IP 通过 `X-Real-IP` 转给 cfhub，用于判断线路类别。日志里的 `... via https://...` 会写明每次请求走的是哪条路。
 
-连 cfhub 的连接（两条路都是）在 Linux 和 macOS 上把 TCP 分段限制在 1200 字节（`echprobe/hub.go` 的 `hubMSS`，release 8 起）。有的线路会丢掉满尺寸的上行包，同时拦掉让发送方改小包的 ICMP，结果小请求能通、几 KB 的上报一直卡住；限制分段大小后上报也能过去。cfhub 源站自己也把 443 端口的 MSS 限制在 1200。Windows 没有这个套接字选项，只靠源站一侧。
+**IPv6 那一轮（release 10 起）**：cfhub 用连接的来源地址判断线路类别和网段，而 `edge` 和 cfhub 只有 IPv4 地址，所以在 release 10 之前，IPv6 的测速结果也是经 IPv4 上报的，被记在 IPv4 的网段和线路类别下；IPv4 和 IPv6 不属于同一家运营商时，IPv6 的投票会进错池。现在签名清单里另有一项 `api6`，目前是 `https://cfhub6.1molchuan.top`：一个只开放探针接口、由 Cloudflare 代理的地址。IPv6 那一轮先走它：探针用 IPv6 连接本机实测最好的 Cloudflare IPv6 地址（取候选前用历史最好的，上报时用本轮最好的，最多 2 个；任何 Cloudflare 地址都能访问任何 Cloudflare 上的网站），不经过代理。Cloudflare 把这条线路的 IPv6 地址通过 `CF-Connecting-IP` 传给 cfhub，cfhub 只在连接确实来自 Cloudflare 网段时才采信它。这条路连不上时，回退到上面的路线（结果仍记在 IPv4 下）。走这条路时，HTTPS 在 Cloudflare 解开，Cloudflare 能看到 token、上报内容和你的 IPv6 地址。日志里写作 `... via https://cfhub6.1molchuan.top [<IPv6 地址>]`。
+
+连 cfhub 的连接（所有路线）在 Linux 和 macOS 上把 TCP 分段限制在 1200 字节（`echprobe/hub.go` 的 `hubMSS`，release 8 起）。有的线路会丢掉满尺寸的上行包，同时拦掉让发送方改小包的 ICMP，结果小请求能通、几 KB 的上报一直卡住；限制分段大小后上报也能过去。cfhub 源站自己也把 443 端口的 MSS 限制在 1200。Windows 没有这个套接字选项，只靠源站一侧。
 
 ### 一次运行的过程（`echprobe/hub.go`）
 
@@ -111,7 +113,7 @@ docker run -d --name cfprobe --restart unless-stopped --network host \
 ### cfhub 保存什么
 
 - 你的 linux.do 账号 id、用户名、显示名、信任等级。
-- 探针所在的 /24 网段（IPv6 为 /48）和线路类别。**不保存完整 IP。**
+- 探针所在的 /24 网段（经 IPv6 上报时为 /48）和线路类别。**不保存完整 IP。**
 - 测速结果，保留 7 天。
 - 每台探针（IPv4 网段）的累计在线小时数和首次上报时间，用于感谢榜；删掉测速结果后仍保留。
 - token 只存 sha256 哈希，丢了只能重新生成。
@@ -145,7 +147,7 @@ curl -s https://cfhub.1molchuan.top/dl/manifest.json
 ```bash
 # 1. 把 echprobe/selfupdate.go 里的 releaseSeq 加 1，提交并推送
 ./build.sh
-(cd cfhub && go run ./cmd/cfrelease -key <私钥文件> -seq <新版本号> -dist ../dist -sources https://edge.1molchuan.top/cfprobe -api https://edge.1molchuan.top)
+(cd cfhub && go run ./cmd/cfrelease -key <私钥文件> -seq <新版本号> -dist ../dist -sources https://edge.1molchuan.top/cfprobe -api https://edge.1molchuan.top -api6 https://cfhub6.1molchuan.top)
 # 2. 把 dist/ 里的三个程序和 manifest.json、manifest.json.sig 复制到 cfhub 的 dist 目录；清单最后放
 ```
 

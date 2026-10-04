@@ -25,7 +25,7 @@ import (
 // prober's own state directory); the new one takes effect at the next run. -no-update turns it off.
 
 // releaseSeq is this build's release number. Bump it for every release, before building.
-const releaseSeq = 9
+const releaseSeq = 10
 
 // releasePublicKey verifies release manifests (base64, ed25519).
 const releasePublicKey = "pZvca84iii/7oUhLtAuvGls4U5dNbh64pCqhJnDTZps="
@@ -40,6 +40,10 @@ type releaseManifest struct {
 	// better than the hub itself), tried in order before the hub. It comes from the signed manifest,
 	// so a hub or mirror cannot redirect reports, and the route can change without a new binary.
 	API []string `json:"api,omitempty"`
+	// API6 lists base URLs of the probe API behind Cloudflare. An IPv6 run tries them first, connected
+	// over IPv6 to Cloudflare addresses this line measured, so the hub sees the line's IPv6 address and
+	// files the report under its IPv6 prefix and operator (the other routes are IPv4 only).
+	API6 []string `json:"api6,omitempty"`
 }
 
 const maxReleaseBinary = 64 << 20

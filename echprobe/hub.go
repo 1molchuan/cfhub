@@ -88,16 +88,85 @@ func apiBases(m releaseManifest, hub string) []string {
 	return append(out, hub)
 }
 
+// hubRoute is one way to reach the probe API: a base URL and the client that carries the request.
+type hubRoute struct {
+	base   string
+	via    string // the address a pinned route dials, for the log
+	client *http.Client
+}
+
+func (r hubRoute) String() string {
+	if r.via == "" {
+		return r.base
+	}
+	return r.base + " [" + r.via + "]"
+}
+
+// plainRoutes reaches each base through hubClient: names resolved as usual, so over IPv4 for the hub
+// and the CDN route, which have no IPv6 address.
+func plainRoutes(bases []string) []hubRoute {
+	out := make([]hubRoute, 0, len(bases))
+	for _, base := range bases {
+		out = append(out, hubRoute{base: base, client: hubClient})
+	}
+	return out
+}
+
+// maxPinnedIPv6 bounds the Cloudflare addresses tried per IPv6 route before falling back to the others.
+const maxPinnedIPv6 = 2
+
+// ipv6Routes reaches the manifest's api6 bases (Cloudflare) over IPv6, so the request leaves from
+// this line's IPv6 address and Cloudflare passes that address to the hub: the hub then files an IPv6
+// report under the line's IPv6 prefix and operator, not its IPv4 ones. Each base is dialed at the
+// given Cloudflare addresses, best first (any Cloudflare address serves any Cloudflare site, and these
+// are the ones this line reaches); with none, the base's own name is resolved and dialed over IPv6.
+// No proxy: one would hide the address.
+func ipv6Routes(bases, candidates []string) []hubRoute {
+	var ips []string
+	for _, ip := range candidates {
+		if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() == nil && len(ips) < maxPinnedIPv6 {
+			ips = append(ips, ip)
+		}
+	}
+	if len(ips) == 0 {
+		ips = []string{""}
+	}
+	var out []hubRoute
+	for _, base := range bases {
+		for _, ip := range ips {
+			transport := hubClient.Transport.(*http.Transport).Clone()
+			transport.Proxy = nil
+			transport.DialContext = pinnedDial(ip)
+			out = append(out, hubRoute{base: base, via: ip, client: &http.Client{Timeout: 20 * time.Second, Transport: transport}})
+		}
+	}
+	return out
+}
+
+// pinnedDial dials over IPv6 only: to ip on the requested port when set, else to the requested address.
+func pinnedDial(ip string) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, _, addr string) (net.Conn, error) {
+		if ip != "" {
+			_, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			addr = net.JoinHostPort(ip, port)
+		}
+		return hubDial(ctx, "tcp6", addr)
+	}
+}
+
 // callHubAPI sends one request to the first route that answers: a transport failure (timeout,
 // reset) moves on to the next route, while any HTTP response, even an error, is final.
-func callHubAPI(apis []string, method, path, token string, body []byte) (*http.Response, error) {
+func callHubAPI(routes []hubRoute, method, path, token string, body []byte) (*http.Response, error) {
 	var lastErr error
-	for _, base := range apis {
+	for _, route := range routes {
 		var reader io.Reader
 		if body != nil {
 			reader = bytes.NewReader(body)
 		}
-		req, err := http.NewRequest(method, base+path, reader)
+		req, err := http.NewRequest(method, route.base+path, reader)
 		if err != nil {
 			return nil, err
 		}
@@ -105,12 +174,12 @@ func callHubAPI(apis []string, method, path, token string, body []byte) (*http.R
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
-		resp, err := hubClient.Do(req)
+		resp, err := route.client.Do(req)
 		if err == nil {
-			fmt.Fprintf(os.Stderr, "%s %s via %s: HTTP %d\n", method, strings.SplitN(path, "?", 2)[0], base, resp.StatusCode)
+			fmt.Fprintf(os.Stderr, "%s %s via %s: HTTP %d\n", method, strings.SplitN(path, "?", 2)[0], route, resp.StatusCode)
 			return resp, nil
 		}
-		fmt.Fprintf(os.Stderr, "%s unreachable (%v), trying the next route\n", base, err)
+		fmt.Fprintf(os.Stderr, "%s unreachable (%v), trying the next route\n", route, err)
 		lastErr = err
 	}
 	return nil, lastErr
@@ -118,7 +187,7 @@ func callHubAPI(apis []string, method, path, token string, body []byte) (*http.R
 
 // fetchHubCandidates asks the hub what to re-test: this operator's current pool and the top of
 // other volunteers' recent reports on it, so independent probers converge on common IPs.
-func fetchHubCandidates(apis []string, token string, family int) (hubCandidates, error) {
+func fetchHubCandidates(apis []hubRoute, token string, family int) (hubCandidates, error) {
 	var out hubCandidates
 	resp, err := callHubAPI(apis, http.MethodGet, fmt.Sprintf("/api/v1/probe/candidates?family=%d", family), token, nil)
 	if err != nil {
@@ -156,7 +225,7 @@ func hubReportBody(ranked []rankedIP, family int) []byte {
 var reportBackoff = []time.Duration{20 * time.Second, time.Minute, 2 * time.Minute}
 
 // sendHubReport posts the report, retrying after reportBackoff while no route answers at all.
-func sendHubReport(apis []string, token string, body []byte) (int, string, error) {
+func sendHubReport(apis []hubRoute, token string, body []byte) (int, string, error) {
 	for attempt := 0; ; attempt++ {
 		status, reply, err := postHubReport(apis, token, body)
 		if err == nil || attempt == len(reportBackoff) {
@@ -169,7 +238,7 @@ func sendHubReport(apis []string, token string, body []byte) (int, string, error
 
 // postHubReport sends the report; the status code is returned so the caller can tell a refusal
 // (bad token, too soon) from a transport failure on every route (err != nil, worth a retry).
-func postHubReport(apis []string, token string, body []byte) (int, string, error) {
+func postHubReport(apis []hubRoute, token string, body []byte) (int, string, error) {
 	resp, err := callHubAPI(apis, http.MethodPost, "/api/v1/probe/report", token, body)
 	if err != nil {
 		return 0, "", err
@@ -189,10 +258,14 @@ func hubRun(doh, resolver, candidates, target string, rounds int, timeout time.D
 	fmt.Fprintf(os.Stderr, "%s\n", probeVersion)
 	// The signed manifest names the release and any faster routes to the hub's probe API.
 	apis := []string{hub}
+	var api6 []string
 	if m, err := loadManifest(hub); err != nil {
 		fmt.Fprintln(os.Stderr, "release manifest unavailable (reporting to the hub directly):", err)
 	} else {
 		apis = apiBases(m, hub)
+		if ipFamily == 6 {
+			api6 = m.API6
+		}
 		if update {
 			cleanupOldExecutable()
 			if seq, err := selfUpdate(hub, m); err != nil {
@@ -203,8 +276,12 @@ func hubRun(doh, resolver, candidates, target string, rounds int, timeout time.D
 		}
 	}
 	hist, known := loadKnown(historyPath)
+	// An IPv6 run goes over IPv6 first (see ipv6Routes): before the run at the addresses that did best
+	// in earlier runs, for the report at this run's best.
+	routes := func(best []string) []hubRoute { return append(ipv6Routes(api6, best), plainRoutes(apis)...) }
+	previousBest, _ := retestOrder(hist, known, nil)
 	var peers []string
-	if hubPeers, err := fetchHubCandidates(apis, token, ipFamily); err != nil {
+	if hubPeers, err := fetchHubCandidates(routes(previousBest), token, ipFamily); err != nil {
 		fmt.Fprintln(os.Stderr, "hub candidates unavailable (continuing without):", err)
 		if directDialer != nil {
 			// 2026-10-01: OpenClash on the router redirected the prober's own connections; bound to the
@@ -236,11 +313,18 @@ func hubRun(doh, resolver, candidates, target string, rounds int, timeout time.D
 		fmt.Fprintf(os.Stderr, "only %d eligible IPs (< %d); not reporting\n", len(ranked), hubMinIPs)
 		os.Exit(3)
 	}
-	status, reply, err := sendHubReport(apis, token, hubReportBody(ranked, ipFamily))
+	best := make([]string, 0, maxPinnedIPv6)
+	for _, r := range ranked {
+		if len(best) < maxPinnedIPv6 {
+			best = append(best, r.IP)
+		}
+	}
+	reportRoutes := routes(best)
+	status, reply, err := sendHubReport(reportRoutes, token, hubReportBody(ranked, ipFamily))
 	if err == nil && status == http.StatusBadRequest && strings.Contains(reply, "at most") && len(ranked) > legacyHubMaxIPs {
 		// A hub from before 2026-10-01 (or a self-hosted one) takes 64: send the best 64 instead.
 		fmt.Fprintf(os.Stderr, "hub takes fewer IPs (%s); sending the best %d\n", reply, legacyHubMaxIPs)
-		status, reply, err = sendHubReport(apis, token, hubReportBody(ranked[:legacyHubMaxIPs], ipFamily))
+		status, reply, err = sendHubReport(reportRoutes, token, hubReportBody(ranked[:legacyHubMaxIPs], ipFamily))
 	}
 	switch {
 	case err != nil:
