@@ -83,6 +83,35 @@ func TestNationalPoolNeedsTwoLinesAndHonoursSuspension(t *testing.T) {
 	}
 }
 
+// Pools serve only IPs within fastTier of their fastest median: the DoH rotates through the whole
+// pool, so a slow member gets its share of connections. Fewer than two fast ones are topped up.
+func TestPoolsKeepOnlyTheFastTier(t *testing.T) {
+	timed := func(isp string, block int, medians map[string]int, order ...string) []Report {
+		reports := lineReports(isp, block, order...)
+		for _, r := range reports {
+			for i := range r.IPs {
+				r.IPs[i].MedianMS = medians[r.IPs[i].IP]
+			}
+		}
+		return reports
+	}
+	medians := map[string]int{"104.16.1.1": 200, "104.16.2.1": 250, "104.16.3.1": 750, "104.16.4.1": 255, "104.16.5.1": 700}
+	reports := timed("chinanet", 1, medians, "104.16.1.1", "104.16.3.1", "104.16.2.1", "104.16.5.1", "104.16.4.1")
+	p := aggregate(reports, 2, 6, nil)[poolKey{"chinanet", 4}]
+	if got := addresses(p); !reflect.DeepEqual(got, []string{"104.16.1.1", "104.16.2.1", "104.16.4.1"}) {
+		t.Fatalf("pool %v, want only the IPs within 1.3x of 200 ms, in rank order", got)
+	}
+	if p.MedianMS != 250 {
+		t.Fatalf("pool median %d, want 250 (of the IPs served)", p.MedianMS)
+	}
+	// One fast IP and the rest slow: the next in rank order tops the pool up to two.
+	slow := map[string]int{"104.16.1.1": 100, "104.16.3.1": 900, "104.16.5.1": 800}
+	q := aggregate(timed("unicom", 2, slow, "104.16.1.1", "104.16.3.1", "104.16.5.1"), 2, 6, nil)[poolKey{"unicom", 4}]
+	if got := addresses(q); !reflect.DeepEqual(got, []string{"104.16.1.1", "104.16.3.1"}) || !q.Published {
+		t.Fatalf("pool %v (published %v), want the fast IP and the next best", got, q.Published)
+	}
+}
+
 func TestNationalPoolKeepsTwoPerBlock(t *testing.T) {
 	var reports []Report
 	reports = append(reports, lineReports("chinanet", 1, "104.16.1.1", "104.16.1.2", "104.16.1.3")...)

@@ -59,6 +59,39 @@ func (p *Pool) addresses() []string {
 	return out
 }
 
+// fastTier is how much slower than a pool's fastest IP (by median handshake time) another IP may be
+// and still be served. The DoH hands the pool out in rotation and browsers dial the first address,
+// so every slow member sends its share of connections the slow way.
+const fastTier = 1.3
+
+// fastest keeps, in order, the IPs within fastTier of the fastest median, topped up with the next
+// ones in order to at least minConsensus, and at most size. Candidates come ranked by consensus, so a
+// pool asked for more than size can still fill up with fast ones.
+func fastest(ips []PoolIP, size int) []PoolIP {
+	best := 0
+	for _, ip := range ips {
+		if ip.MedianMS > 0 && (best == 0 || ip.MedianMS < best) {
+			best = ip.MedianMS
+		}
+	}
+	kept := []PoolIP{}
+	var rest []PoolIP
+	for _, ip := range ips {
+		if best == 0 || (ip.MedianMS > 0 && float64(ip.MedianMS) <= float64(best)*fastTier) {
+			kept = append(kept, ip)
+		} else {
+			rest = append(rest, ip)
+		}
+	}
+	for len(kept) < minConsensus && len(rest) > 0 {
+		kept, rest = append(kept, rest[0]), rest[1:]
+	}
+	if len(kept) > size {
+		kept = kept[:size]
+	}
+	return kept
+}
+
 func median(values []int) int {
 	if len(values) == 0 {
 		return 0
@@ -107,15 +140,18 @@ func aggregate(reports []Report, quorum, size int, suspended map[string]bool) ma
 		}
 		users := len(perUser[key])
 		pool := &Pool{ISP: key.ISP, Name: operatorNames[key.ISP], Family: key.Family, IPs: []PoolIP{}, Probers: len(list), Users: users}
-		var poolMedians []int
-		for _, ip := range strictConsensus(lists, owners, size) {
-			m := median(medians[ip])
+		var candidates []PoolIP
+		for _, ip := range strictConsensus(lists, owners, 2*size) {
 			distinct := map[int64]bool{}
 			for _, id := range voters[ip] {
 				distinct[id] = true
 			}
-			pool.IPs = append(pool.IPs, PoolIP{IP: ip, MedianMS: m, Votes: len(voters[ip]), Users: len(distinct), voters: voters[ip]})
-			poolMedians = append(poolMedians, m)
+			candidates = append(candidates, PoolIP{IP: ip, MedianMS: median(medians[ip]), Votes: len(voters[ip]), Users: len(distinct), voters: voters[ip]})
+		}
+		pool.IPs = fastest(candidates, size)
+		var poolMedians []int
+		for _, ip := range pool.IPs {
+			poolMedians = append(poolMedians, ip.MedianMS)
 		}
 		pool.MedianMS = median(poolMedians)
 		switch {
@@ -184,8 +220,9 @@ func national(pools map[poolKey]*Pool, lines []string, family, size, users int, 
 			e.voters = append(e.voters, ip.voters...)
 		}
 	}
+	// No fast-tier cut here: each input is already within fastTier of its own line's fastest, and
+	// medians measured on different lines are not comparable (one line's 600 ms can be its best).
 	perBlock := map[string]int{}
-	var poolMedians []int
 	add := func(ip string) {
 		if len(pool.IPs) >= size || slices.ContainsFunc(pool.IPs, func(p PoolIP) bool { return p.IP == ip }) || perBlock[addressBlock(ip)] >= maxPerBlock {
 			return
@@ -196,9 +233,7 @@ func national(pools map[poolKey]*Pool, lines []string, family, size, users int, 
 		for _, id := range e.voters {
 			distinct[id] = true
 		}
-		m := median(e.medians)
-		pool.IPs = append(pool.IPs, PoolIP{IP: ip, MedianMS: m, Votes: e.votes, Users: len(distinct), Lines: e.lines, voters: e.voters})
-		poolMedians = append(poolMedians, m)
+		pool.IPs = append(pool.IPs, PoolIP{IP: ip, MedianMS: median(e.medians), Votes: e.votes, Users: len(distinct), Lines: e.lines, voters: e.voters})
 	}
 	var shared []string
 	for ip, e := range entries {
@@ -230,6 +265,10 @@ func national(pools map[poolKey]*Pool, lines []string, family, size, users int, 
 		if !more {
 			break
 		}
+	}
+	var poolMedians []int
+	for _, ip := range pool.IPs {
+		poolMedians = append(poolMedians, ip.MedianMS)
 	}
 	pool.MedianMS = median(poolMedians)
 	switch {
