@@ -8,7 +8,7 @@
   <section class="card {{if .Pool.Published}}live{{else}}idle{{end}}{{if $national}} national{{end}}">
     <h2>{{.Pool.Name}} <small>IPv{{.Pool.Family}}</small></h2>
     <p class="status">{{if .Pool.Published}}✅ 已发布{{else}}⏸ {{.Pool.Reason}}{{end}}</p>
-    {{if $national}}<p class="muted small">汇总各类线路已发布的池,每类线路算一份:先选多类线路都认可的 IP,再轮流补各线路自己最好的。DoH 把它给不属于这几类线路的访问者,也用来补某类线路缺少的 IPv4 / IPv6。</p>{{end}}
+    {{if $national}}<p class="muted small">汇总各类线路已发布的池,每类线路算一份:只选至少 2 类线路都认可的 IP,认可的线路越多越靠前。只有一类线路认可的 IP 不收:它在别的线路上快不快没人测过。DoH 把它给不属于这几类线路的访问者,也用来补某类线路缺少的 IPv4 / IPv6。</p>{{end}}
     <p class="muted">{{.Pool.Users}} 人 · {{.Pool.Probers}} 台探针{{if .Pool.MedianMS}} · 握手中位 {{.Pool.MedianMS}} ms{{end}}</p>
     {{if .Pool.IPs}}
     <table>

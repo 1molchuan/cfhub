@@ -64,9 +64,14 @@ func (p *Pool) addresses() []string {
 // so every slow member sends its share of connections the slow way.
 const fastTier = 1.3
 
+// topUpLimit is how much slower than the fastest an IP topping a short pool up to minConsensus may be.
+// None closer: the pool stays short and unpublished, and the DoH serves a wider pool instead of
+// giving a 900 ms IP half the connections next to a 100 ms one.
+const topUpLimit = 2.0
+
 // fastest keeps, in order, the IPs within fastTier of the fastest median, topped up with the next
-// ones in order to at least minConsensus, and at most size. Candidates come ranked by consensus, so a
-// pool asked for more than size can still fill up with fast ones.
+// ones in order within topUpLimit to at least minConsensus if it can, and at most size. Candidates
+// come ranked by consensus, so a pool asked for more than size can still fill up with fast ones.
 func fastest(ips []PoolIP, size int) []PoolIP {
 	best := 0
 	for _, ip := range ips {
@@ -83,8 +88,13 @@ func fastest(ips []PoolIP, size int) []PoolIP {
 			rest = append(rest, ip)
 		}
 	}
-	for len(kept) < minConsensus && len(rest) > 0 {
-		kept, rest = append(kept, rest[0]), rest[1:]
+	for _, ip := range rest {
+		if len(kept) >= minConsensus {
+			break
+		}
+		if ip.MedianMS > 0 && float64(ip.MedianMS) <= float64(best)*topUpLimit {
+			kept = append(kept, ip)
+		}
 	}
 	if len(kept) > size {
 		kept = kept[:size]
@@ -163,6 +173,8 @@ func aggregate(reports []Report, quorum, size int, suspended map[string]bool) ma
 			pool.Reason = fmt.Sprintf("需要至少 %d 个不同用户的探针(当前 %d 人、%d 台)", quorum, users, len(list))
 		case len(pool.IPs) == 0:
 			pool.Reason = fmt.Sprintf("探针之间没有至少 %d 个多数一致、且有 %d 人以上认可的 IP", minConsensus, minBackers)
+		case len(pool.IPs) < minConsensus:
+			pool.Reason = fmt.Sprintf("中位延迟不超过最快那个 %g 倍的 IP 不足 %d 个", topUpLimit, minConsensus)
 		default:
 			pool.Published = true
 		}
@@ -189,9 +201,12 @@ func aggregate(reports []Report, quorum, size int, suspended map[string]bool) ma
 
 // national combines the published pools of the mainland lines (carriers, CERNET, domestic clouds; not
 // "other") into one pool for clients on none of them, and for the address family a line lacks. Each
-// line counts once however many probers it has, so the pool favours IPs that are good on several
-// lines: those in the most line pools first (then by average rank), then each line's own best in
-// turn, at most maxPerBlock per /24. Every input already passed its line's quorum and minBackers.
+// line counts once however many probers it has, and only IPs in at least two line pools are taken,
+// those in the most first (then by average rank), at most maxPerBlock per /24. An IP only one line
+// measured as fast says nothing about the others, and its clients are exactly the ones whose line
+// is unknown (2026-10-06 review: unicom's and mobile's own picks were the slowest two on unicom).
+// Too few shared IPs leave the pool unpublished, and the DoH falls back to its own probers' pool.
+// Every input already passed its line's quorum and minBackers.
 func national(pools map[poolKey]*Pool, lines []string, family, size, users int, suspended bool) *Pool {
 	pool := &Pool{ISP: nationalISP, Name: operatorNames[nationalISP], Family: family, IPs: []PoolIP{}, Users: users}
 	type entry struct {
@@ -202,11 +217,9 @@ func national(pools map[poolKey]*Pool, lines []string, family, size, users int, 
 		voters  []int64
 	}
 	entries := map[string]*entry{}
-	var lists [][]PoolIP
 	for _, isp := range lines {
 		p := pools[poolKey{isp, family}]
 		pool.Probers += p.Probers
-		lists = append(lists, p.IPs)
 		for rank, ip := range p.IPs {
 			e := entries[ip.IP]
 			if e == nil {
@@ -254,18 +267,6 @@ func national(pools map[poolKey]*Pool, lines []string, family, size, users int, 
 	for _, ip := range shared {
 		add(ip)
 	}
-	for rank := 0; len(pool.IPs) < size; rank++ {
-		more := false
-		for _, list := range lists {
-			if rank < len(list) {
-				more = true
-				add(list[rank].IP)
-			}
-		}
-		if !more {
-			break
-		}
-	}
 	var poolMedians []int
 	for _, ip := range pool.IPs {
 		poolMedians = append(poolMedians, ip.MedianMS)
@@ -277,7 +278,7 @@ func national(pools map[poolKey]*Pool, lines []string, family, size, users int, 
 	case len(lines) < minNationalLines:
 		pool.Reason = fmt.Sprintf("需要至少 %d 类线路的池已发布(当前 %d 类)", minNationalLines, len(lines))
 	case len(pool.IPs) < minConsensus:
-		pool.Reason = fmt.Sprintf("可选的 IP 不足 %d 个", minConsensus)
+		pool.Reason = fmt.Sprintf("至少 2 类线路都认可的 IP 不足 %d 个", minConsensus)
 	default:
 		pool.Published = true
 	}

@@ -44,8 +44,8 @@ func TestNationalPoolCombinesLinesOneVoteEach(t *testing.T) {
 	if p == nil || !p.Published {
 		t.Fatalf("nationwide pool %+v, want published", p)
 	}
-	// 104.16.1.1 is in all three lines, 104.16.2.1 in two; then each line's best in turn.
-	want := []string{"104.16.1.1", "104.16.2.1", "104.16.9.1", "104.16.8.1", "104.16.3.1", "104.16.4.1"}
+	// 104.16.1.1 is in all three lines, 104.16.2.1 in two; an IP only one line picked is left out.
+	want := []string{"104.16.1.1", "104.16.2.1"}
 	if got := addresses(p); !reflect.DeepEqual(got, want) {
 		t.Fatalf("nationwide pool %v, want %v", got, want)
 	}
@@ -67,7 +67,12 @@ func TestNationalPoolNeedsTwoLinesAndHonoursSuspension(t *testing.T) {
 	if p := aggregate(one, 2, 6, nil)[poolKey{nationalISP, 4}]; p == nil || p.Published || !strings.Contains(p.Reason, "2 类线路") {
 		t.Fatalf("one line: %+v, want an unpublished pool asking for 2 lines", p)
 	}
-	two := append(one, lineReports("cloud", 2, "104.16.1.1", "104.16.5.1")...)
+	// Two lines that share only one IP: nothing to publish (the DoH falls back to its own probers).
+	lone := append(slices.Clone(one), lineReports("cloud", 2, "104.16.1.1", "104.16.5.1")...)
+	if p := aggregate(lone, 2, 6, nil)[poolKey{nationalISP, 4}]; p.Published || !strings.Contains(p.Reason, "都认可的 IP 不足") {
+		t.Fatalf("two lines sharing one IP: %+v, want unpublished", p)
+	}
+	two := append(slices.Clone(one), lineReports("cloud", 2, "104.16.1.1", "104.16.2.1", "104.16.5.1")...)
 	if p := aggregate(two, 2, 6, nil)[poolKey{nationalISP, 4}]; !p.Published {
 		t.Fatalf("two lines: %+v", p)
 	}
@@ -104,11 +109,17 @@ func TestPoolsKeepOnlyTheFastTier(t *testing.T) {
 	if p.MedianMS != 250 {
 		t.Fatalf("pool median %d, want 250 (of the IPs served)", p.MedianMS)
 	}
-	// One fast IP and the rest slow: the next in rank order tops the pool up to two.
+	// One fast IP: the next in rank order within 2x tops the pool up to two, skipping slower ones.
+	mixed := map[string]int{"104.16.1.1": 100, "104.16.3.1": 900, "104.16.5.1": 180}
+	q := aggregate(timed("unicom", 2, mixed, "104.16.1.1", "104.16.3.1", "104.16.5.1"), 2, 6, nil)[poolKey{"unicom", 4}]
+	if got := addresses(q); !reflect.DeepEqual(got, []string{"104.16.1.1", "104.16.5.1"}) || !q.Published {
+		t.Fatalf("pool %v (published %v), want the fast IP and the next one within 2x", got, q.Published)
+	}
+	// None within 2x: the pool is not published, so no 900 ms IP gets half the connections.
 	slow := map[string]int{"104.16.1.1": 100, "104.16.3.1": 900, "104.16.5.1": 800}
-	q := aggregate(timed("unicom", 2, slow, "104.16.1.1", "104.16.3.1", "104.16.5.1"), 2, 6, nil)[poolKey{"unicom", 4}]
-	if got := addresses(q); !reflect.DeepEqual(got, []string{"104.16.1.1", "104.16.3.1"}) || !q.Published {
-		t.Fatalf("pool %v (published %v), want the fast IP and the next best", got, q.Published)
+	r := aggregate(timed("cmcc", 3, slow, "104.16.1.1", "104.16.3.1", "104.16.5.1"), 2, 6, nil)[poolKey{"cmcc", 4}]
+	if r.Published || !reflect.DeepEqual(addresses(r), []string{"104.16.1.1"}) || !strings.Contains(r.Reason, "不足") {
+		t.Fatalf("pool %v (published %v, %q), want one IP and unpublished", addresses(r), r.Published, r.Reason)
 	}
 }
 
@@ -117,8 +128,8 @@ func TestNationalPoolKeepsTwoPerBlock(t *testing.T) {
 	reports = append(reports, lineReports("chinanet", 1, "104.16.1.1", "104.16.1.2", "104.16.1.3")...)
 	reports = append(reports, lineReports("unicom", 2, "104.16.1.1", "104.16.1.2", "104.16.1.3", "104.16.2.1")...)
 	p := aggregate(reports, 2, 6, nil)[poolKey{nationalISP, 4}]
-	if got := addresses(p); !reflect.DeepEqual(got, []string{"104.16.1.1", "104.16.1.2", "104.16.2.1"}) {
-		t.Fatalf("pool %v, want at most two addresses from 104.16.1.0/24", got)
+	if got := addresses(p); !reflect.DeepEqual(got, []string{"104.16.1.1", "104.16.1.2"}) {
+		t.Fatalf("pool %v, want at most two addresses from 104.16.1.0/24 (and not unicom's own 104.16.2.1)", got)
 	}
 }
 
@@ -135,9 +146,9 @@ func TestNationalPoolIsPushedAndShown(t *testing.T) {
 		}
 	}
 	// A second line (cmcc: two users) publishes, and so does the nationwide pool.
-	te.do(t, "POST", "/api/v1/probe/report", c, "120.192.1.9", report("104.16.1.1", "104.16.3.1"))
+	te.do(t, "POST", "/api/v1/probe/report", c, "120.192.1.9", report("104.16.1.1", "104.16.2.1", "104.16.3.1"))
 	d := te.user(t, 63, "d")
-	te.do(t, "POST", "/api/v1/probe/report", d, "120.192.2.9", report("104.16.1.1", "104.16.3.1"))
+	te.do(t, "POST", "/api/v1/probe/report", d, "120.192.2.9", report("104.16.1.1", "104.16.2.1", "104.16.3.1"))
 	te.hub.runAggregation(context.Background())
 	var national map[string]any
 	for _, push := range te.pushed {
@@ -145,7 +156,7 @@ func TestNationalPoolIsPushedAndShown(t *testing.T) {
 			national = push
 		}
 	}
-	if national == nil || !reflect.DeepEqual(national["ipv4"], []any{"104.16.1.1", "104.16.2.1", "104.16.3.1"}) {
+	if national == nil || !reflect.DeepEqual(national["ipv4"], []any{"104.16.1.1", "104.16.2.1"}) {
 		t.Fatalf("nationwide push %v", national)
 	}
 	body, _ := io.ReadAll(te.do(t, "GET", "/", "", "", nil).Body)
