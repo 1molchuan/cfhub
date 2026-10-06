@@ -106,6 +106,33 @@ func fastest(ips []PoolIP, size int) []PoolIP {
 	return kept
 }
 
+// seated picks at most size IPs of the tier, in its rank order, incumbents first: an IP the pool
+// served last time keeps its seat while it is still in the fast tier, and only the seats left go to
+// the others by rank. Without it the pool traded members whose medians differ by noise every few
+// rounds (2026-10-06 review: 229-261 ms IPs swapped three times in 25 minutes), and each swap left
+// DoH answers cached with the old pool. A much faster newcomer still gets in: it pushes the slow
+// incumbents out of the fast tier.
+func seated(tier []PoolIP, incumbents []string, size int) []PoolIP {
+	chosen := map[string]bool{}
+	for _, ip := range tier {
+		if len(chosen) < size && slices.Contains(incumbents, ip.IP) {
+			chosen[ip.IP] = true
+		}
+	}
+	for _, ip := range tier {
+		if len(chosen) < size {
+			chosen[ip.IP] = true
+		}
+	}
+	out := []PoolIP{}
+	for _, ip := range tier {
+		if chosen[ip.IP] {
+			out = append(out, ip)
+		}
+	}
+	return out
+}
+
 func median(values []int) int {
 	if len(values) == 0 {
 		return 0
@@ -122,7 +149,8 @@ func median(values []int) int {
 // each counts, but at most maxProbersPerUser per pool, and strictConsensus admits only IPs that
 // probers of minBackers different users vouch for: a single person's servers can add weight to what
 // others found, never publish an IP alone. A pool needs probers of at least `quorum` users.
-func aggregate(reports []Report, quorum, size int, suspended map[string]bool) map[poolKey]*Pool {
+// incumbents are the IPs each pool served last time (see seated).
+func aggregate(reports []Report, quorum, size int, suspended map[string]bool, incumbents map[poolKey][]string) map[poolKey]*Pool {
 	byKey := map[poolKey][]Report{}
 	seenPrefix := map[poolKey]map[string]bool{}
 	perUser := map[poolKey]map[int64]int{}
@@ -162,8 +190,8 @@ func aggregate(reports []Report, quorum, size int, suspended map[string]bool) ma
 			}
 			candidates = append(candidates, PoolIP{IP: ip, MedianMS: median(medians[ip]), Votes: len(voters[ip]), Users: len(distinct), voters: voters[ip]})
 		}
-		pool.IPs = fastest(candidates, size)
 		pool.tier = fastest(candidates, len(candidates))
+		pool.IPs = seated(pool.tier, incumbents[key], size)
 		var poolMedians []int
 		for _, ip := range pool.IPs {
 			poolMedians = append(poolMedians, ip.MedianMS)
@@ -198,7 +226,7 @@ func aggregate(reports []Report, quorum, size int, suspended map[string]bool) ma
 			}
 		}
 		if len(lines) > 0 {
-			pools[poolKey{nationalISP, family}] = national(pools, lines, family, size, len(users), suspended[nationalISP])
+			pools[poolKey{nationalISP, family}] = national(pools, lines, family, size, len(users), suspended[nationalISP], incumbents[poolKey{nationalISP, family}])
 		}
 	}
 	return pools
@@ -214,7 +242,7 @@ func aggregate(reports []Report, quorum, size int, suspended map[string]bool) ma
 // (2026-10-06 review: unicom's and mobile's own picks were the slowest two on unicom). Too few
 // shared IPs leave the pool unpublished, and the DoH falls back to its own probers' pool. Every
 // input already passed its line's quorum and minBackers.
-func national(pools map[poolKey]*Pool, lines []string, family, size, users int, suspended bool) *Pool {
+func national(pools map[poolKey]*Pool, lines []string, family, size, users int, suspended bool, incumbents []string) *Pool {
 	pool := &Pool{ISP: nationalISP, Name: operatorNames[nationalISP], Family: family, IPs: []PoolIP{}, Users: users}
 	type entry struct {
 		lines   []string
@@ -271,9 +299,20 @@ func national(pools map[poolKey]*Pool, lines []string, family, size, users int, 
 		}
 		return shared[i] < shared[j]
 	})
+	// Incumbents still shared keep their seats (see seated); the rest go by rank, shown in rank order.
+	for _, ip := range shared {
+		if slices.Contains(incumbents, ip) {
+			add(ip)
+		}
+	}
 	for _, ip := range shared {
 		add(ip)
 	}
+	order := map[string]int{}
+	for i, ip := range shared {
+		order[ip] = i
+	}
+	sort.SliceStable(pool.IPs, func(i, j int) bool { return order[pool.IPs[i].IP] < order[pool.IPs[j].IP] })
 	var poolMedians []int
 	for _, ip := range pool.IPs {
 		poolMedians = append(poolMedians, ip.MedianMS)
@@ -352,7 +391,16 @@ func (h *Hub) runAggregation(ctx context.Context) {
 	for _, isp := range append(slices.Clone(operators), nationalISP) {
 		suspended[isp] = h.store.Setting("suspended:"+isp) == "1"
 	}
-	pools := aggregate(reports, h.cfg.Quorum, h.cfg.PoolSize, suspended)
+	// What each pool served last (its newest history point, so it survives a restart).
+	incumbents := map[poolKey][]string{}
+	for _, isp := range append(slices.Clone(operators), nationalISP) {
+		for _, family := range []int{4, 6} {
+			if last, ok, err := h.store.LastHistory(isp, family); err == nil && ok {
+				incumbents[poolKey{isp, family}] = last.IPs
+			}
+		}
+	}
+	pools := aggregate(reports, h.cfg.Quorum, h.cfg.PoolSize, suspended, incumbents)
 	cut = now.Add(-regionWindow).Unix()
 	regions := regionStats(day[:sort.Search(len(day), func(i int) bool { return day[i].At < cut })], h.region.Province)
 	leaders, err := h.store.Leaders(now.Unix(), 50)

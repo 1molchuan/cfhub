@@ -240,11 +240,11 @@ func TestAggregateLeavesOtherAndSuspendedUnpublished(t *testing.T) {
 		r(1, "1.1.1.0/24", "other", "104.16.1.1"), r(2, "2.2.2.0/24", "other", "104.16.1.1"),
 		r(3, "3.3.3.0/24", "cmcc", "104.16.1.1", "104.16.2.1"), r(4, "4.4.4.0/24", "cmcc", "104.16.1.1", "104.16.2.1"),
 	}
-	pools := aggregate(reports, 2, 6, map[string]bool{"cmcc": true})
+	pools := aggregate(reports, 2, 6, map[string]bool{"cmcc": true}, nil)
 	if pools[poolKey{"other", 4}].Published || pools[poolKey{"cmcc", 4}].Published {
 		t.Fatal("'other' and a suspended operator must never be published")
 	}
-	if pools := aggregate(reports, 2, 6, nil); !pools[poolKey{"cmcc", 4}].Published {
+	if pools := aggregate(reports, 2, 6, nil, nil); !pools[poolKey{"cmcc", 4}].Published {
 		t.Fatal("cmcc with quorum should publish when not suspended")
 	}
 }
@@ -281,7 +281,7 @@ func TestOneUserCountsAtMostFiveServersPerPool(t *testing.T) {
 	for i := range 7 {
 		reports = append(reports, Report{UserID: 1, Prefix: fmt.Sprintf("58.247.%d.0/24", i), ISP: "chinanet", Family: 4, IPs: []ReportIP{{IP: "104.16.1.1", Rounds: 6, OK: 6}}})
 	}
-	if p := aggregate(reports, 2, 6, nil)[poolKey{"chinanet", 4}]; p.Probers != maxProbersPerUser {
+	if p := aggregate(reports, 2, 6, nil, nil)[poolKey{"chinanet", 4}]; p.Probers != maxProbersPerUser {
 		t.Fatalf("one user's 7 servers counted as %d probers, want %d", p.Probers, maxProbersPerUser)
 	}
 }

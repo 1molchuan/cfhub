@@ -39,7 +39,7 @@ func TestNationalPoolCombinesLinesOneVoteEach(t *testing.T) {
 	reports = append(reports, lineReports("cmcc", 3, "104.16.8.1", "104.16.1.1")...)
 	// "other" (overseas) never feeds the nationwide pool, however loud.
 	reports = append(reports, lineReports("other", 4, "104.16.7.1", "104.16.7.2")...)
-	pools := aggregate(reports, 2, 6, nil)
+	pools := aggregate(reports, 2, 6, nil, nil)
 	p := pools[poolKey{nationalISP, 4}]
 	if p == nil || !p.Published {
 		t.Fatalf("nationwide pool %+v, want published", p)
@@ -64,26 +64,26 @@ func TestNationalPoolCombinesLinesOneVoteEach(t *testing.T) {
 
 func TestNationalPoolNeedsTwoLinesAndHonoursSuspension(t *testing.T) {
 	one := lineReports("chinanet", 1, "104.16.1.1", "104.16.2.1")
-	if p := aggregate(one, 2, 6, nil)[poolKey{nationalISP, 4}]; p == nil || p.Published || !strings.Contains(p.Reason, "2 类线路") {
+	if p := aggregate(one, 2, 6, nil, nil)[poolKey{nationalISP, 4}]; p == nil || p.Published || !strings.Contains(p.Reason, "2 类线路") {
 		t.Fatalf("one line: %+v, want an unpublished pool asking for 2 lines", p)
 	}
 	// Two lines that share only one IP: nothing to publish (the DoH falls back to its own probers).
 	lone := append(slices.Clone(one), lineReports("cloud", 2, "104.16.1.1", "104.16.5.1")...)
-	if p := aggregate(lone, 2, 6, nil)[poolKey{nationalISP, 4}]; p.Published || !strings.Contains(p.Reason, "都认可的 IP 不足") {
+	if p := aggregate(lone, 2, 6, nil, nil)[poolKey{nationalISP, 4}]; p.Published || !strings.Contains(p.Reason, "都认可的 IP 不足") {
 		t.Fatalf("two lines sharing one IP: %+v, want unpublished", p)
 	}
 	two := append(slices.Clone(one), lineReports("cloud", 2, "104.16.1.1", "104.16.2.1", "104.16.5.1")...)
-	if p := aggregate(two, 2, 6, nil)[poolKey{nationalISP, 4}]; !p.Published {
+	if p := aggregate(two, 2, 6, nil, nil)[poolKey{nationalISP, 4}]; !p.Published {
 		t.Fatalf("two lines: %+v", p)
 	}
-	if p := aggregate(two, 2, 6, map[string]bool{nationalISP: true})[poolKey{nationalISP, 4}]; p.Published {
+	if p := aggregate(two, 2, 6, map[string]bool{nationalISP: true}, nil)[poolKey{nationalISP, 4}]; p.Published {
 		t.Fatal("a suspended nationwide pool was published")
 	}
 	// A suspended line is not published, so it does not count either.
-	if p := aggregate(two, 2, 6, map[string]bool{"cloud": true})[poolKey{nationalISP, 4}]; p.Published {
+	if p := aggregate(two, 2, 6, map[string]bool{"cloud": true}, nil)[poolKey{nationalISP, 4}]; p.Published {
 		t.Fatal("a suspended line still fed the nationwide pool")
 	}
-	if p := aggregate(lineReports("other", 1, "104.16.1.1"), 2, 6, nil)[poolKey{nationalISP, 4}]; p != nil {
+	if p := aggregate(lineReports("other", 1, "104.16.1.1"), 2, 6, nil, nil)[poolKey{nationalISP, 4}]; p != nil {
 		t.Fatalf("no published line, yet a nationwide pool: %+v", p)
 	}
 }
@@ -102,7 +102,7 @@ func TestPoolsKeepOnlyTheFastTier(t *testing.T) {
 	}
 	medians := map[string]int{"104.16.1.1": 200, "104.16.2.1": 250, "104.16.3.1": 750, "104.16.4.1": 255, "104.16.5.1": 700}
 	reports := timed("chinanet", 1, medians, "104.16.1.1", "104.16.3.1", "104.16.2.1", "104.16.5.1", "104.16.4.1")
-	p := aggregate(reports, 2, 6, nil)[poolKey{"chinanet", 4}]
+	p := aggregate(reports, 2, 6, nil, nil)[poolKey{"chinanet", 4}]
 	if got := addresses(p); !reflect.DeepEqual(got, []string{"104.16.1.1", "104.16.2.1", "104.16.4.1"}) {
 		t.Fatalf("pool %v, want only the IPs within 1.3x of 200 ms, in rank order", got)
 	}
@@ -111,13 +111,13 @@ func TestPoolsKeepOnlyTheFastTier(t *testing.T) {
 	}
 	// One fast IP: the next in rank order within 2x tops the pool up to two, skipping slower ones.
 	mixed := map[string]int{"104.16.1.1": 100, "104.16.3.1": 900, "104.16.5.1": 180}
-	q := aggregate(timed("unicom", 2, mixed, "104.16.1.1", "104.16.3.1", "104.16.5.1"), 2, 6, nil)[poolKey{"unicom", 4}]
+	q := aggregate(timed("unicom", 2, mixed, "104.16.1.1", "104.16.3.1", "104.16.5.1"), 2, 6, nil, nil)[poolKey{"unicom", 4}]
 	if got := addresses(q); !reflect.DeepEqual(got, []string{"104.16.1.1", "104.16.5.1"}) || !q.Published {
 		t.Fatalf("pool %v (published %v), want the fast IP and the next one within 2x", got, q.Published)
 	}
 	// None within 2x: the pool is not published, so no 900 ms IP gets half the connections.
 	slow := map[string]int{"104.16.1.1": 100, "104.16.3.1": 900, "104.16.5.1": 800}
-	r := aggregate(timed("cmcc", 3, slow, "104.16.1.1", "104.16.3.1", "104.16.5.1"), 2, 6, nil)[poolKey{"cmcc", 4}]
+	r := aggregate(timed("cmcc", 3, slow, "104.16.1.1", "104.16.3.1", "104.16.5.1"), 2, 6, nil, nil)[poolKey{"cmcc", 4}]
 	if r.Published || !reflect.DeepEqual(addresses(r), []string{"104.16.1.1"}) || !strings.Contains(r.Reason, "不足") {
 		t.Fatalf("pool %v (published %v, %q), want one IP and unpublished", addresses(r), r.Published, r.Reason)
 	}
@@ -143,7 +143,7 @@ func TestNationalPoolFindsSharedIPsBeyondTheServedSix(t *testing.T) {
 			}
 		}
 	}
-	pools := aggregate(append(a, b...), 2, 6, nil)
+	pools := aggregate(append(a, b...), 2, 6, nil, nil)
 	if got := addresses(pools[poolKey{"chinanet", 4}]); !reflect.DeepEqual(got, own("104.16")) {
 		t.Fatalf("telecom serves %v, want its own six", got)
 	}
@@ -153,11 +153,42 @@ func TestNationalPoolFindsSharedIPsBeyondTheServedSix(t *testing.T) {
 	}
 }
 
+// An IP the pool served last time keeps its seat while it stays in the fast tier, however the ranks
+// shuffle within it; a much faster newcomer still pushes slow incumbents out.
+func TestPoolsKeepTheirMembersWhileTheyStayFast(t *testing.T) {
+	ips := []string{"104.16.1.1", "104.16.2.1", "104.16.3.1", "104.16.4.1", "104.16.5.1", "104.16.6.1", "104.16.7.1", "104.16.8.1"}
+	reports := append(lineReports("chinanet", 1, ips...), lineReports("unicom", 2, ips...)...)
+	served := []string{"104.16.3.1", "104.16.8.1", "104.16.7.1", "104.16.1.1", "104.16.2.1", "104.16.4.1"}
+	incumbents := map[poolKey][]string{{"chinanet", 4}: served, {nationalISP, 4}: served}
+	pools := aggregate(reports, 2, 6, nil, incumbents)
+	want := []string{"104.16.1.1", "104.16.2.1", "104.16.3.1", "104.16.4.1", "104.16.7.1", "104.16.8.1"} // rank order
+	if got := addresses(pools[poolKey{"chinanet", 4}]); !reflect.DeepEqual(got, want) {
+		t.Fatalf("telecom %v, want last round's six kept (in rank order) %v", got, want)
+	}
+	if got := addresses(pools[poolKey{"unicom", 4}]); !reflect.DeepEqual(got, ips[:6]) {
+		t.Fatalf("unicom (no incumbents) %v, want the top six by rank", got)
+	}
+	if got := addresses(pools[poolKey{nationalISP, 4}]); !reflect.DeepEqual(got, want) {
+		t.Fatalf("nationwide %v, want its incumbents kept %v", got, want)
+	}
+	// Newcomers twice as fast: the incumbents fall out of the fast tier and lose their seats.
+	for _, r := range reports {
+		for i := range r.IPs {
+			if r.IPs[i].IP == "104.16.5.1" || r.IPs[i].IP == "104.16.6.1" {
+				r.IPs[i].MedianMS = 50
+			}
+		}
+	}
+	if got := addresses(aggregate(reports, 2, 6, nil, incumbents)[poolKey{"chinanet", 4}]); !reflect.DeepEqual(got, []string{"104.16.5.1", "104.16.6.1"}) {
+		t.Fatalf("telecom %v, want only the much faster newcomers", got)
+	}
+}
+
 func TestNationalPoolKeepsTwoPerBlock(t *testing.T) {
 	var reports []Report
 	reports = append(reports, lineReports("chinanet", 1, "104.16.1.1", "104.16.1.2", "104.16.1.3")...)
 	reports = append(reports, lineReports("unicom", 2, "104.16.1.1", "104.16.1.2", "104.16.1.3", "104.16.2.1")...)
-	p := aggregate(reports, 2, 6, nil)[poolKey{nationalISP, 4}]
+	p := aggregate(reports, 2, 6, nil, nil)[poolKey{nationalISP, 4}]
 	if got := addresses(p); !reflect.DeepEqual(got, []string{"104.16.1.1", "104.16.1.2"}) {
 		t.Fatalf("pool %v, want at most two addresses from 104.16.1.0/24 (and not unicom's own 104.16.2.1)", got)
 	}
