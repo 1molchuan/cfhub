@@ -123,6 +123,36 @@ func TestPoolsKeepOnlyTheFastTier(t *testing.T) {
 	}
 }
 
+// Lines rarely serve the same six, so the nationwide pool looks for shared IPs in each line's whole
+// fast tier (consensus candidates up to twice the pool size), but an IP slow on a line does not count
+// as that line's.
+func TestNationalPoolFindsSharedIPsBeyondTheServedSix(t *testing.T) {
+	own := func(prefix string) []string { // six IPs, one per /24
+		var ips []string
+		for i := 1; i <= 6; i++ {
+			ips = append(ips, fmt.Sprintf("%s.%d.1", prefix, i))
+		}
+		return ips
+	}
+	a := lineReports("chinanet", 1, append(own("104.16"), "104.17.9.1", "104.18.9.1", "104.19.9.1")...)
+	b := lineReports("unicom", 2, append(own("104.20"), "104.17.9.1", "104.18.9.1", "104.19.9.1")...)
+	for _, r := range b {
+		for i := range r.IPs {
+			if r.IPs[i].IP == "104.19.9.1" {
+				r.IPs[i].MedianMS = 200 // twice unicom's fastest: not in its fast tier
+			}
+		}
+	}
+	pools := aggregate(append(a, b...), 2, 6, nil)
+	if got := addresses(pools[poolKey{"chinanet", 4}]); !reflect.DeepEqual(got, own("104.16")) {
+		t.Fatalf("telecom serves %v, want its own six", got)
+	}
+	p := pools[poolKey{nationalISP, 4}]
+	if got := addresses(p); !p.Published || !reflect.DeepEqual(got, []string{"104.17.9.1", "104.18.9.1"}) {
+		t.Fatalf("nationwide pool %v (published %v, %q), want the two IPs both lines have in their fast tier", got, p.Published, p.Reason)
+	}
+}
+
 func TestNationalPoolKeepsTwoPerBlock(t *testing.T) {
 	var reports []Report
 	reports = append(reports, lineReports("chinanet", 1, "104.16.1.1", "104.16.1.2", "104.16.1.3")...)

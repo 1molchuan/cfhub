@@ -45,6 +45,10 @@ type Pool struct {
 	MedianMS  int      `json:"median_ms"`
 	Published bool     `json:"published"`
 	Reason    string   `json:"reason,omitempty"`
+	// tier is every consensus candidate in the line's fast tier, in rank order, not just the size
+	// served: the nationwide pool looks for IPs several lines share in it, since lines rarely pick
+	// the same six.
+	tier []PoolIP
 }
 
 // maxProbersPerUser caps how many of one user's probers (distinct /24s) vote in one pool: more
@@ -159,6 +163,7 @@ func aggregate(reports []Report, quorum, size int, suspended map[string]bool) ma
 			candidates = append(candidates, PoolIP{IP: ip, MedianMS: median(medians[ip]), Votes: len(voters[ip]), Users: len(distinct), voters: voters[ip]})
 		}
 		pool.IPs = fastest(candidates, size)
+		pool.tier = fastest(candidates, len(candidates))
 		var poolMedians []int
 		for _, ip := range pool.IPs {
 			poolMedians = append(poolMedians, ip.MedianMS)
@@ -201,12 +206,14 @@ func aggregate(reports []Report, quorum, size int, suspended map[string]bool) ma
 
 // national combines the published pools of the mainland lines (carriers, CERNET, domestic clouds; not
 // "other") into one pool for clients on none of them, and for the address family a line lacks. Each
-// line counts once however many probers it has, and only IPs in at least two line pools are taken,
-// those in the most first (then by average rank), at most maxPerBlock per /24. An IP only one line
-// measured as fast says nothing about the others, and its clients are exactly the ones whose line
-// is unknown (2026-10-06 review: unicom's and mobile's own picks were the slowest two on unicom).
-// Too few shared IPs leave the pool unpublished, and the DoH falls back to its own probers' pool.
-// Every input already passed its line's quorum and minBackers.
+// line counts once however many probers it has, and only IPs in the fast tier of at least two lines
+// are taken (each line's tier: its consensus candidates within fastTier of its own fastest, up to
+// twice the pool size, as the six served rarely coincide across lines), those in the most lines
+// first (then by average rank), at most maxPerBlock per /24. An IP only one line measured as fast
+// says nothing about the others, and its clients are exactly the ones whose line is unknown
+// (2026-10-06 review: unicom's and mobile's own picks were the slowest two on unicom). Too few
+// shared IPs leave the pool unpublished, and the DoH falls back to its own probers' pool. Every
+// input already passed its line's quorum and minBackers.
 func national(pools map[poolKey]*Pool, lines []string, family, size, users int, suspended bool) *Pool {
 	pool := &Pool{ISP: nationalISP, Name: operatorNames[nationalISP], Family: family, IPs: []PoolIP{}, Users: users}
 	type entry struct {
@@ -220,7 +227,7 @@ func national(pools map[poolKey]*Pool, lines []string, family, size, users int, 
 	for _, isp := range lines {
 		p := pools[poolKey{isp, family}]
 		pool.Probers += p.Probers
-		for rank, ip := range p.IPs {
+		for rank, ip := range p.tier {
 			e := entries[ip.IP]
 			if e == nil {
 				e = &entry{}
